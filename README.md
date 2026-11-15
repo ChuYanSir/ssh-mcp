@@ -6,7 +6,7 @@
 > **作者**：[初颜Sir](https://github.com/ChuYanSir) · chuyansir@163.com
 > **仓库**：<https://github.com/ChuYanSir/ssh-mcp> · **版本**：v1.0.0
 
-桌面端「更多 → 关于 ssh-mcp」、状态栏右下角、以及网页版页脚都带有作者与仓库地址：
+桌面端「更多 → 关于 ssh-mcp」和状态栏右下角都带有作者与仓库地址：
 
 ![关于](docs/ui-about.png)
 
@@ -111,7 +111,6 @@ python -m ssh_mcp --transport http --host 127.0.0.1 --port <端口> --config <se
 ```powershell
 # HTTP（常驻，多会话共用一套凭据与连接池）
 .\scripts\start-http.ps1                     # 自动生成 token，打印地址
-.\scripts\start-http.ps1 -NoUi               # 只跑纯 MCP 端点，不挂任何网页
 .\scripts\start-http.ps1 -NoAuth             # 本地回环自用，免 token
 .\scripts\start-http.ps1 -Port 9000 -Token xxx
 
@@ -124,13 +123,13 @@ python -m ssh_mcp --transport http --host 127.0.0.1 --port <端口> --config <se
 
 | | 桌面端 | HTTP 服务（桌面端拉起或 `start-http.ps1`） | stdio |
 |---|---|---|---|
-| 图形界面 | ✅ | 可选网页版（`--no-ui` 关掉） | ❌ |
+| 图形界面 | ✅ 唯一的图形入口 | ❌ 纯 MCP 端点 | ❌ |
 | 进程 | GUI 进程 | **独立进程，关 GUI 不影响** | 客户端拉起 |
 | 连接池 | 自己的（测试/终端用） | 自己的，多会话共享 | 各进程独立 |
 | 适合 | 本机运维/管理 | 团队共用一台跳板 | 单机单 Agent |
 
-> 之前做的网页版仍然在（HTTP 模式默认挂在 `/`），`--no-ui` 可完全关掉；
-> 只想用桌面端的话完全不用碰它。
+> HTTP 模式只暴露 `/mcp` 一个端点，根路径返回 404——**没有网页后台**，
+> 所有配置、测试、执行都在桌面端做。
 
 配置文件查找顺序：`--config` → `SSH_MCP_CONFIG` → `./servers.yaml`
 → `./.ssh-mcp/servers.yaml` → `~/.ssh-mcp/servers.yaml`。
@@ -248,7 +247,7 @@ proxy_jump: bastion                     # 经另一台已配置的 alias 进内�
 
 ### 5.4 审计 `audit`
 
-每次 exec / 文件操作 / 桌面端与网页端的配置改动都落一行 JSONL，`ssh_audit_tail` 工具可直接查。
+每次 exec / 文件操作 / 桌面端的配置改动都落一行 JSONL，`ssh_audit_tail` 工具可直接查。
 
 ---
 
@@ -302,7 +301,7 @@ proxy_jump: bastion                     # 经另一台已配置的 alias 进内�
 - **输出被截断**：返回 `truncated: true`，调大上限或把命令重定向到文件后用 `ssh_read_file` 分段读。
 - **长时间任务**：exec 超时不会杀远端进程，建议 `nohup cmd > log 2>&1 &` 后轮询日志。
 - **手改 yaml 后不生效**：桌面端点「刷新」；HTTP 服务调 `ssh_reload_config`；stdio 重启客户端。
-- **管理页覆盖 yaml 后注释没了**：`safe_dump` 不保留注释，原文件在 `servers.yaml.bak`；
+- **桌面端保存后 yaml 注释没了**：`safe_dump` 不保留注释，原文件在 `servers.yaml.bak`；
   想保留注释就手写。
 
 **已知边界**：不提供交互式 shell、端口转发、SCP；一条 exec 只跑一条命令，多步用 `&&` 串。
@@ -314,9 +313,8 @@ proxy_jump: bastion                     # 经另一台已配置的 alias 进内�
 ```powershell
 cd E:\Temp\AiWork\ssh-mcp
 $env:PYTHONIOENCODING='utf-8'
-.\.venv\Scripts\python.exe -m pytest tests -q        # 30 项：exec/退出码/截断/策略/SFTP/MCP stdio/管理接口/配置读写
-.\.venv\Scripts\python.exe tests\http_probe.py       # HTTP + Bearer 401/200 + 页面
-.\.venv\Scripts\python.exe tests\serve_demo.py       # 带网页版的演示服务
+.\.venv\Scripts\python.exe -m pytest tests -q        # 20 项：exec/退出码/截断/策略/SFTP/MCP stdio/配置读写
+.\.venv\Scripts\python.exe tests\http_probe.py       # HTTP + Bearer 401/200，且根路径必须 404
 .\.venv\Scripts\python.exe tests\desktop_demo.py     # 桌面端 + 假 SSH 后端（127.0.0.1 随机端口）
 .\.venv\Scripts\python.exe tests\probe_hosts.py      # 逐台探测 servers.yaml 里配置的 SSH 是否可达
 ```
@@ -337,6 +335,6 @@ $env:PYTHONIOENCODING='utf-8'
 界面上的入口：
 
 - 桌面端：右上「更多 ▾ → 关于 ssh-mcp」（含复制地址、打开 GitHub 按钮），状态栏右下角常驻
-  `by 初颜Sir · github.com/ChuYanSir/ssh-mcp`，点一下即可打开关于窗口；
-- 网页版：页面底部页脚 `ssh-mcp v1.0.0 · 作者 初颜Sir · github.com/ChuYanSir/ssh-mcp`，
-  版本与地址由 `/api/hosts` 的 `app` 字段动态填充，改 `__init__.py` 即可，不用改页面。
+  `by 初颜Sir · github.com/ChuYanSir/ssh-mcp`，点一下即可打开关于窗口。
+- 作者、邮箱、仓库地址与版本号统一放在 `src/ssh_mcp/__init__.py`（`__author__` /
+  `__author_email__` / `__github__` / `__version__`），改一处即可。

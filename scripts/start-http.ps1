@@ -14,7 +14,6 @@ param(
     [int]$Port = 8765,
     [string]$Token = $env:SSH_MCP_TOKEN,
     [switch]$AllowAnyHost,
-    [switch]$NoUi,
     [switch]$NoAuth,
     [switch]$Background
 )
@@ -59,11 +58,9 @@ $cliArgs = @(
 )
 if ($Token) { $cliArgs += @('--token', $Token) }
 if ($AllowAnyHost) { $cliArgs += '--allow-any-host' }
-if ($NoUi) { $cliArgs += '--no-ui' }
 
 Write-Host "config = $Config"
 Write-Host "mcp    = http://${Listen}:${Port}/mcp"
-if (-not $NoUi) { Write-Host "page   = http://${Listen}:${Port}/" }
 if ($NoAuth) {
     Write-Host "auth   = OFF (only use this on 127.0.0.1)"
 }

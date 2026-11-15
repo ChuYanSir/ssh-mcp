@@ -24,7 +24,6 @@ from mcp.client.streamable_http import streamable_http_client  # noqa: E402
 
 from ssh_mcp.__main__ import BearerGuard  # noqa: E402
 from ssh_mcp import server as srv  # noqa: E402
-from ssh_mcp.admin import mount_admin  # noqa: E402
 
 TOKEN = "probe-token-123"
 
@@ -89,7 +88,7 @@ def main() -> int:
 
     port = free_port()
     app = BearerGuard(
-        mount_admin(srv.mcp.streamable_http_app(streamable_http_path="/mcp")),
+        srv.mcp.streamable_http_app(streamable_http_path="/mcp"),
         TOKEN,
     )
     config = uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning")
@@ -105,20 +104,10 @@ def main() -> int:
 
     print(f"[probe] server started on {url}")
 
-    # 0) 管理页：静态壳公开，API 要 token
-    page = httpx2.get(f"http://127.0.0.1:{port}/", timeout=10)
-    print(f"[probe] page status = {page.status_code} len={len(page.text)}")
-    ok &= page.status_code == 200 and "新增主机" in page.text
-
-    api_no = httpx2.get(f"http://127.0.0.1:{port}/api/hosts", timeout=10)
-    api_ok = httpx2.get(
-        f"http://127.0.0.1:{port}/api/hosts",
-        headers={"Authorization": f"Bearer {TOKEN}"},
-        timeout=10,
-    )
-    print(f"[probe] api no-token={api_no.status_code} with-token={api_ok.status_code}")
-    ok &= api_no.status_code == 401 and api_ok.status_code == 200
-    ok &= api_ok.json()["hosts"][0]["alias"] == "local"
+    # 0) 只有 MCP 端点：根路径不应存在任何管理页
+    root = httpx2.get(f"http://127.0.0.1:{port}/", headers={"Authorization": f"Bearer {TOKEN}"}, timeout=10)
+    print(f"[probe] root status = {root.status_code} (expect 404)")
+    ok &= root.status_code == 404
 
     # 1) 无 token 必须 401
     r = httpx2.post(url, json={"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}, timeout=10)

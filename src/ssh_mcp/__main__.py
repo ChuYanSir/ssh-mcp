@@ -20,19 +20,15 @@ from .server import init_runtime, mcp
 class BearerGuard:
     """极简 ASGI 中间件：HTTP 传输模式下校验 Bearer token。
 
-    管理页的静态壳（`/`）放行，因为它不含任何数据；所有 `/api/*` 与 `/mcp` 必须带 token。
+    只管 `/mcp`（可选 `/sse`）这一个端点，没有其它入口需要放行。
     """
 
-    def __init__(self, app: Any, token: str, public_paths: Any = frozenset({"/", "/favicon.ico"})) -> None:
+    def __init__(self, app: Any, token: str) -> None:
         self.app = app
         self.token = token
-        self.public_paths = public_paths
 
     async def __call__(self, scope: dict[str, Any], receive: Any, send: Any) -> None:
         if scope["type"] in ("http", "websocket"):
-            if scope["type"] == "http" and scope.get("method") in ("GET", "HEAD") and scope.get("path") in self.public_paths:
-                await self.app(scope, receive, send)
-                return
             headers = {k.decode("latin-1").lower(): v.decode("latin-1") for k, v in scope.get("headers", [])}
             provided = headers.get("authorization", "")
             expected = f"Bearer {self.token}"
@@ -74,7 +70,6 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="放开 DNS rebinding 的 Host 头校验（监听非回环地址时自动放开）",
     )
-    p.add_argument("--no-ui", action="store_true", help="不挂载 Web 管理页（只跑纯 MCP 端点）")
     p.add_argument("--print-config", action="store_true", help="只打印解析后的脱敏配置并退出")
     return p
 
@@ -141,12 +136,6 @@ def main(argv: list[str] | None = None) -> int:
         app = mcp.sse_app()
     else:
         app = mcp.streamable_http_app(streamable_http_path=args.path, transport_security=security)
-
-    if not args.no_ui:
-        from .admin import mount_admin
-
-        app = mount_admin(app)
-        print(f"[ssh-mcp] 管理页: http://{args.host}:{args.port}/", file=sys.stderr)
 
     if token:
         app = BearerGuard(app, token)

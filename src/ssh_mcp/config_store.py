@@ -1,4 +1,4 @@
-"""servers.yaml 的读写层：给 Web 管理页用。
+﻿"""servers.yaml 的读写层：给桌面端用。
 
 原则：
 1. 先在临时文件上跑一遍 `load_config()` 校验，通过了才覆盖正式文件；
@@ -56,7 +56,7 @@ def _read_raw(path: Path) -> dict[str, Any]:
 
 
 TEMPLATE = """\
-# ssh-mcp 配置（桌面端 / Web 管理页写入的都是这个文件）
+# ssh-mcp 配置（桌面端写入的就是这个文件）
 name: ssh-mcp
 
 defaults:
