@@ -3,6 +3,13 @@
 把 SSH 凭据收进一个中间服务：客户端会话只拿 `alias` 就能执行命令，**永远看不到用户名、密码、私钥**。
 配了一个原生桌面端（tkinter，无浏览器、无 Electron），增删主机就是在窗口里填表。
 
+> **作者**：[初颜Sir](https://github.com/ChuYanSir) · chuyansir@163.com
+> **仓库**：<https://github.com/ChuYanSir/ssh-mcp> · **版本**：v1.0.0
+
+桌面端「更多 → 关于 ssh-mcp」、状态栏右下角、以及网页版页脚都带有作者与仓库地址：
+
+![关于](docs/ui-about.png)
+
 ```
         ┌──────────────┐    MCP (stdio / HTTP)     ┌──────────────────┐   SSH    ┌──────────────┐
         │  会话端 A     │ ────────────────────────▶ │                  │ ───────▶ │ prod-web-1   │
@@ -307,7 +314,7 @@ proxy_jump: bastion                     # 经另一台已配置的 alias 进内�
 ```powershell
 cd E:\Temp\AiWork\ssh-mcp
 $env:PYTHONIOENCODING='utf-8'
-.\.venv\Scripts\python.exe -m pytest tests -q        # 25 项：exec/退出码/截断/策略/SFTP/MCP stdio/管理接口/配置读写
+.\.venv\Scripts\python.exe -m pytest tests -q        # 30 项：exec/退出码/截断/策略/SFTP/MCP stdio/管理接口/配置读写
 .\.venv\Scripts\python.exe tests\http_probe.py       # HTTP + Bearer 401/200 + 页面
 .\.venv\Scripts\python.exe tests\serve_demo.py       # 带网页版的演示服务
 .\.venv\Scripts\python.exe tests\desktop_demo.py     # 桌面端 + 假 SSH 后端（127.0.0.1 随机端口）
@@ -315,3 +322,21 @@ $env:PYTHONIOENCODING='utf-8'
 ```
 
 测试用 `tests/fake_ssh_server.py` 起本地回环 SSH 服务（密码认证 + exec + SFTP），不碰任何真实主机。
+
+---
+
+## 10. 作者与许可
+
+| | |
+|---|---|
+| 作者 | 初颜Sir |
+| 邮箱 | chuyansir@163.com |
+| 仓库 | <https://github.com/ChuYanSir/ssh-mcp> |
+| 问题反馈 | <https://github.com/ChuYanSir/ssh-mcp/issues> |
+
+界面上的入口：
+
+- 桌面端：右上「更多 ▾ → 关于 ssh-mcp」（含复制地址、打开 GitHub 按钮），状态栏右下角常驻
+  `by 初颜Sir · github.com/ChuYanSir/ssh-mcp`，点一下即可打开关于窗口；
+- 网页版：页面底部页脚 `ssh-mcp v1.0.0 · 作者 初颜Sir · github.com/ChuYanSir/ssh-mcp`，
+  版本与地址由 `/api/hosts` 的 `app` 字段动态填充，改 `__init__.py` 即可，不用改页面。

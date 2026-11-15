@@ -31,6 +31,7 @@ import tkinter as tk
 from tkinter import messagebox, ttk
 
 from . import server as srv
+from . import __author__, __author_email__, __github__, __version__
 from .config import ConfigError, Host
 from .config_store import cred_dir, delete_host, ensure_config, upsert_host
 
@@ -716,6 +717,76 @@ class McpConfigDialog(tk.Toplevel):
 
 
 # --------------------------------------------------------------------------- #
+# 关于窗口：作者 + 版本 + GitHub 地址
+# --------------------------------------------------------------------------- #
+class AboutDialog(tk.Toplevel):
+    def __init__(self, app: "App") -> None:
+        super().__init__(app)
+        self.app = app
+        self.title("关于 ssh-mcp")
+        self.transient(app)
+        self.resizable(False, False)
+        self.configure(padx=22, pady=18)
+
+        ttk.Label(self, text="ssh-mcp", font=("Microsoft YaHei UI", 17, "bold")).pack(anchor="w")
+        ttk.Label(
+            self,
+            text=f"版本 {__version__}    SSH 凭据留在服务端的 MCP 中间层",
+            foreground="#6b7a8d",
+        ).pack(anchor="w", pady=(2, 14))
+
+        grid = ttk.Frame(self)
+        grid.pack(fill="x")
+        grid.columnconfigure(1, weight=1)
+
+        ttk.Label(grid, text="作者", foreground="#6b7a8d").grid(row=0, column=0, sticky="w", pady=(0, 6))
+        ttk.Label(grid, text=__author__).grid(row=0, column=1, sticky="w", padx=(12, 0), pady=(0, 6))
+
+        ttk.Label(grid, text="邮箱", foreground="#6b7a8d").grid(row=1, column=0, sticky="w", pady=(0, 6))
+        ttk.Label(grid, text=__author_email__).grid(row=1, column=1, sticky="w", padx=(12, 0), pady=(0, 6))
+
+        ttk.Label(grid, text="GitHub", foreground="#6b7a8d").grid(row=2, column=0, sticky="w", pady=(0, 6))
+        link = tk.Label(grid, text=__github__, fg="#0a66c2", cursor="hand2", font=("Microsoft YaHei UI", 9, "underline"))
+        link.grid(row=2, column=1, sticky="w", padx=(12, 0), pady=(0, 6))
+        link.bind("<Button-1>", lambda e: self.open_github())
+
+        ttk.Label(
+            self,
+            text="凭据只保存在本机；会话端只拿到别名。",
+            foreground="#6b7a8d",
+        ).pack(anchor="w", pady=(10, 0))
+
+        bar = ttk.Frame(self)
+        bar.pack(fill="x", pady=(16, 0))
+        ttk.Button(bar, text="复制地址", command=self.copy_link).pack(side="left")
+        ttk.Button(bar, text="打开 GitHub", style="Accent.TButton", command=self.open_github).pack(side="left", padx=(8, 0))
+        ttk.Button(bar, text="关闭", command=self.destroy).pack(side="right")
+
+        self.bind("<Escape>", lambda e: self.destroy())
+        self.grab_set()
+        self.update_idletasks()
+        w, h = max(self.winfo_reqwidth(), 420), self.winfo_reqheight()
+        px = app.winfo_rootx() + (app.winfo_width() - w) // 2
+        py = app.winfo_rooty() + (app.winfo_height() - h) // 2
+        self.geometry(f"{w}x{h}+{max(px, 0)}+{max(py, 0)}")
+
+    def open_github(self) -> None:
+        try:
+            import webbrowser
+
+            webbrowser.open(__github__)
+        except Exception as exc:  # noqa: BLE001
+            messagebox.showerror("打开失败", str(exc), parent=self)
+
+    def copy_link(self) -> None:
+        self.clipboard_clear()
+        self.clipboard_append(__github__)
+        self.update()
+        self.app._term(f"# 已复制仓库地址：{__github__}", "dim")
+
+
+
+# --------------------------------------------------------------------------- #
 # 主窗口
 # --------------------------------------------------------------------------- #
 class App(tk.Tk):
@@ -781,6 +852,8 @@ class App(tk.Tk):
         menu.add_command(label="打开服务日志", command=self.on_open_service_log)
         menu.add_separator()
         menu.add_command(label="复制当前配置路径", command=self.on_copy_config_path)
+        menu.add_separator()
+        menu.add_command(label=f"关于 ssh-mcp  v{__version__}", command=self.show_about)
         more["menu"] = menu
         more.pack(side="left", padx=(6, 0))
 
@@ -858,6 +931,18 @@ class App(tk.Tk):
 
         self.status = ttk.Label(self, text="", style="Status.TLabel", padding=(12, 4))
         self.status.pack(fill="x", side="bottom")
+
+        # 作者信息常驻状态栏右侧，点击打开「关于」
+        self.credit = ttk.Label(
+            self,
+            text=f"by {__author__}  ·  {__github__.replace('https://', '')}",
+            foreground="#0a66c2",
+            cursor="hand2",
+            padding=(12, 4),
+        )
+        self.credit.pack(fill="x", side="bottom", anchor="e")
+        self.credit.configure(anchor="e")
+        self.credit.bind("<Button-1>", lambda e: self.show_about())
 
     # ------------------------------------------------------------- formatting
     def _term(self, text: str, tag: str = "out") -> None:
@@ -1175,6 +1260,10 @@ class App(tk.Tk):
 
     def show_mcp_config(self) -> None:
         dlg = McpConfigDialog(self)
+        self.wait_window(dlg)
+
+    def show_about(self) -> None:
+        dlg = AboutDialog(self)
         self.wait_window(dlg)
 
     def _load_ui_state(self) -> None:

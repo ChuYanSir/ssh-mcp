@@ -14,6 +14,7 @@ from starlette.requests import Request
 from starlette.responses import HTMLResponse, JSONResponse, Response
 from starlette.routing import Route
 
+from . import __author__, __github__, __version__
 from . import server as srv
 from .config import ConfigError
 from .config_store import cred_dir, delete_host, upsert_host
@@ -51,6 +52,7 @@ async def list_hosts(request: Request) -> Response:
     return JSONResponse(
         {
             "ok": True,
+            "app": {"name": "ssh-mcp", "version": __version__, "author": __author__, "github": __github__},
             "config_source": rt.cfg.source,
             "creds_dir": str(cred_dir()),
             "hosts": hosts,
