@@ -75,10 +75,15 @@ sudo 用户与密码、shell 类型、超时、host key 策略、跳板机）。
 python -m ssh_mcp --transport http --host 127.0.0.1 --port <端口> --config <servers.yaml> [--token <token>]
 ```
 
-端点 `127.0.0.1:<端口>/mcp`。由此得到两个结果：
+端点 `127.0.0.1:<端口>/mcp`。由此得到三个结果：
 
 - **关掉桌面端窗口不影响服务** —— 客户端可以一直连着用；pid 记在 `~/.ssh-mcp/service.json`，
   下次打开桌面端会自动发现「● 运行中 :8765  pid 1234」并把按钮切成「停止 MCP 服务」。
+- **改配置不用重启服务** —— 服务每次处理工具调用前比一下 `servers.yaml` 的 `(mtime, size)`，
+  变了就自动重读并后台关掉旧连接。所以桌面端里新增一台主机，客户端下一次调用
+  `ssh_list_hosts` 就能看到，不需要点「停止 / 启动」，也不需要手动 `ssh_reload_config`。
+  配置文件写到一半（非法 YAML）时会保留旧配置、把错误记进 `ssh_status().autoload.last_error`，
+  修好后自动恢复。
 - 关闭窗口时如果服务在跑，会问一句「要顺便把服务也停掉吗？」，选否就留着；
   服务日志在 `~/.ssh-mcp/logs/service.log`（更多 → 打开服务日志）。
 
@@ -261,9 +266,9 @@ proxy_jump: bastion                     # 经另一台已配置的 alias 进内�
 | `ssh_check` | 握手探测 + 返回 `uname` / `id` / `date` |
 | `ssh_upload` / `ssh_download` | SFTP 双向传文件，返回 sha256 校验 |
 | `ssh_write_file` / `ssh_read_file` | 直接读写远端文本文件 |
-| `ssh_status` | 连接池状态 + 生效策略 + 配置来源 |
+| `ssh_status` | 连接池状态 + 生效策略 + 配置来源 + 自动热加载统计（`autoload`） |
 | `ssh_close` | 主动断开连接（下次调用自动重连） |
-| `ssh_reload_config` | 热重载 `servers.yaml` |
+| `ssh_reload_config` | 强制重载 `servers.yaml` 并重连（配置变化平时会自动生效，这个用于立刻生效） |
 | `ssh_audit_tail` | 最近审计记录 |
 
 返回统一 JSON：`{alias, host, command, exit_code, ok, timed_out, truncated, duration_ms, stdout, stderr}`。
@@ -300,7 +305,8 @@ proxy_jump: bastion                     # 经另一台已配置的 alias 进内�
 - **`sudo: a password is required`**：在桌面端「认证与 sudo」页填密码，或目标机配 `NOPASSWD`。
 - **输出被截断**：返回 `truncated: true`，调大上限或把命令重定向到文件后用 `ssh_read_file` 分段读。
 - **长时间任务**：exec 超时不会杀远端进程，建议 `nohup cmd > log 2>&1 &` 后轮询日志。
-- **手改 yaml 后不生效**：桌面端点「刷新」；HTTP 服务调 `ssh_reload_config`；stdio 重启客户端。
+- **改了配置不生效**：正常情况下会自动热加载（`ssh_status().autoload.reload_count` 能看到次数）；
+  想看立刻生效就调 `ssh_reload_config`。stdio 模式下客户端各起一个进程，重启客户端即可。
 - **桌面端保存后 yaml 注释没了**：`safe_dump` 不保留注释，原文件在 `servers.yaml.bak`；
   想保留注释就手写。
 
@@ -313,7 +319,7 @@ proxy_jump: bastion                     # 经另一台已配置的 alias 进内�
 ```powershell
 cd E:\Temp\AiWork\ssh-mcp
 $env:PYTHONIOENCODING='utf-8'
-.\.venv\Scripts\python.exe -m pytest tests -q        # 20 项：exec/退出码/截断/策略/SFTP/MCP stdio/配置读写
+.\.venv\Scripts\python.exe -m pytest tests -q        # 25 项：exec/退出码/截断/策略/SFTP/MCP stdio/配置读写/热加载
 .\.venv\Scripts\python.exe tests\http_probe.py       # HTTP + Bearer 401/200，且根路径必须 404
 .\.venv\Scripts\python.exe tests\desktop_demo.py     # 桌面端 + 假 SSH 后端（127.0.0.1 随机端口）
 .\.venv\Scripts\python.exe tests\probe_hosts.py      # 逐台探测 servers.yaml 里配置的 SSH 是否可达

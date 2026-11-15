@@ -232,8 +232,17 @@ class SSHPool:
             closed.append(a)
         return closed
 
+    def close_sync_all(self) -> list[str]:
+        """同步关闭所有连接（给配置热加载的后台清理线程用）。"""
+        closed: list[str] = []
+        for alias, conn in list(self._conns.items()):
+            self._conns.pop(alias, None)
+            self._close_sync(conn.client)
+            closed.append(alias)
+        return closed
+
     def status(self) -> list[dict[str, Any]]:
-        rows = []
+        rows: list[dict[str, Any]] = []
         for alias, conn in sorted(self._conns.items()):
             transport = conn.client.get_transport()
             rows.append(

@@ -3,14 +3,16 @@
 from __future__ import annotations
 
 import platform
+import threading
 import time
+from pathlib import Path
 from typing import Annotated, Any
 
 from mcp.server.mcpserver import MCPServer
 from pydantic import Field
 
 from .audit import AuditLog
-from .config import ServerConfig, load_config
+from .config import ConfigError, ServerConfig, load_config
 from .pool import SSHPool
 
 INSTRUCTIONS = """\
@@ -28,31 +30,101 @@ INSTRUCTIONS = """\
 
 
 class Runtime:
-    def __init__(self, config_path: str | None = None) -> None:
+    """配置 + 审计 + 连接池的持有者。
+
+    支持**自动热加载**：每次工具调用前比一下 servers.yaml 的 (mtime, size)，
+    变了就重读并在后台关掉旧连接。这样桌面端改完主机，常驻服务不用重启也能跟上。
+    """
+
+    def __init__(self, config_path: str | None = None, *, autoload: bool = True) -> None:
         self.config_path = config_path
         self.cfg: ServerConfig = load_config(config_path)
         self.audit = AuditLog(self.cfg.audit)
         self.pool = SSHPool(self.cfg)
         self.started_at = time.time()
+        self.autoload = autoload
+        self.reload_count = 0
+        self.last_reload_at: float | None = None
+        self.last_reload_error: str | None = None
+        self._path = Path(self.cfg.source) if self.cfg.source else None
+        self._stamp = self._config_stamp()
+        self._lock = threading.Lock()
 
-    def reload(self) -> None:
-        self.cfg = load_config(self.config_path)
-        self.audit = AuditLog(self.cfg.audit)
-        self.pool = SSHPool(self.cfg)
+    # ----------------------------------------------------------- 变更检测
+    def _config_stamp(self) -> tuple[int, int] | None:
+        if self._path is None:
+            return None
+        try:
+            st = self._path.stat()
+            return (st.st_mtime_ns, st.st_size)
+        except OSError:
+            return None
+
+    def maybe_reload(self) -> bool:
+        """配置文件变了就重载；返回是否真的重载了。调用成本 = 一次 stat。"""
+        if not self.autoload:
+            return False
+        stamp = self._config_stamp()
+        if stamp is None or stamp == self._stamp:
+            return False
+        return self.reload()
+
+    # --------------------------------------------------------------- 重载
+    def reload(self) -> bool:
+        """重新读取配置。旧连接交给后台线程关闭，不阻塞当前调用。
+
+        配置非法（比如正被半个编辑器写）时保留旧配置，并记住这次的状态，
+        避免同一个坏文件被反复解析刷日志。
+        """
+        with self._lock:
+            target = str(self._path) if self._path else self.config_path
+            try:
+                new_cfg = load_config(target)
+            except ConfigError as exc:
+                self._stamp = self._config_stamp()
+                self.last_reload_error = str(exc)
+                return False
+
+            old_pool = self.pool
+            self.cfg = new_cfg
+            self.audit = AuditLog(new_cfg.audit)
+            self.pool = SSHPool(new_cfg)
+            self._path = Path(new_cfg.source) if new_cfg.source else self._path
+            self._stamp = self._config_stamp()
+            self.reload_count += 1
+            self.last_reload_at = time.time()
+            self.last_reload_error = None
+
+        threading.Thread(
+            target=self._close_pool_sync,
+            args=(old_pool,),
+            daemon=True,
+            name="ssh-mcp-reload-close",
+        ).start()
+        return True
+
+    @staticmethod
+    def _close_pool_sync(pool: SSHPool) -> None:
+        try:
+            pool.close_sync_all()
+        except Exception:  # noqa: BLE001 - 关连接失败不影响新配置生效
+            pass
 
 
 _rt: Runtime | None = None
 
 
-def init_runtime(config_path: str | None = None) -> Runtime:
+def init_runtime(config_path: str | None = None, *, autoload: bool = True) -> Runtime:
     global _rt
-    _rt = Runtime(config_path)
+    _rt = Runtime(config_path, autoload=autoload)
     return _rt
 
 
 def runtime() -> Runtime:
+    """所有工具的统一入口——自动热加载就挂在这里，12 个工具都白拿。"""
     if _rt is None:
         return init_runtime()
+    _rt.maybe_reload()
     return _rt
 
 
@@ -276,6 +348,17 @@ async def ssh_status() -> dict[str, Any]:
         "hosts_configured": sorted(rt.cfg.hosts),
         "policy": rt.cfg.policy.describe(),
         "audit": {"enabled": rt.cfg.audit.enabled, "path": rt.cfg.audit.path},
+        "autoload": {
+            "enabled": rt.autoload,
+            "config_path": str(rt._path) if rt._path else None,
+            "reload_count": rt.reload_count,
+            "last_reload_at": (
+                time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(rt.last_reload_at))
+                if rt.last_reload_at
+                else None
+            ),
+            "last_error": rt.last_reload_error,
+        },
         "connections": rt.pool.status(),
     }
 
@@ -293,16 +376,21 @@ async def ssh_close(
 
 @mcp.tool()
 async def ssh_reload_config() -> dict[str, Any]:
-    """重新读取 servers.yaml（改完配置不用重启 MCP 进程），会断开旧连接。"""
+    """重新读取 servers.yaml（改完配置不用重启 MCP 进程），会断开旧连接。
+
+    配置变化通常已经被自动热加载接管，这个工具留给「想立刻生效 / 强制重连」的场景。
+    """
     rt = runtime()
     closed = await rt.pool.close()
-    rt.reload()
-    _audit("reload_config", config=rt.cfg.source, closed=closed)
+    reloaded = rt.reload()
+    _audit("reload_config", config=rt.cfg.source, closed=closed, reloaded=reloaded)
     return {
         "ok": True,
+        "reloaded": reloaded,
         "config_source": rt.cfg.source,
         "hosts": sorted(rt.cfg.hosts),
         "closed_connections": closed,
+        "last_error": rt.last_reload_error,
     }
 
 

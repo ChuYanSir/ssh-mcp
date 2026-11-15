@@ -1,4 +1,4 @@
-﻿"""ssh-mcp 桌面端（tkinter，无第三方 GUI 依赖）。
+"""ssh-mcp 桌面端（tkinter，无第三方 GUI 依赖）。
 
 走原生窗口：
 - 左侧主机列表，右侧详情 + 命令终端；
@@ -1234,6 +1234,8 @@ class App(tk.Tk):
             self._refresh_hosts()
             if message:
                 self._term(f"# {message}", "dim")
+                if self.service.status()["running"]:
+                    self._term("# 常驻 MCP 服务会在下次工具调用时自动读到新配置，无需重启", "dim")
             self._update_status()
 
         self.runner.submit(job(), on_done=done)
