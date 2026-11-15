@@ -1,0 +1,109 @@
+# ==========================================================================
+# ssh-mcp 配置：所有 SSH 连接与凭据都写在这里，会话端（IDE / Agent）只看到 alias
+# 位置优先级：--config 参数 > 环境变量 SSH_MCP_CONFIG > ./servers.yaml
+#             > ./.ssh-mcp/servers.yaml > ~/.ssh-mcp/servers.yaml
+# ==========================================================================
+name: ssh-mcp
+
+# ------------------------------------------------------------------ 默认值
+defaults:
+  port: 22
+  connect_timeout: 15            # TCP+握手超时（秒）
+  command_timeout: 120           # 单条命令默认超时（秒）
+  max_output_bytes: 262144       # stdout/stderr 各自上限（256KB）
+  keepalive: 30                  # SSH keepalive 间隔（0 = 关闭）
+  host_key_policy: auto_add      # strict=只认 known_hosts | auto_add=首次自动记录 | ignore=不校验
+  known_hosts: ~/.ssh/known_hosts
+  encoding: utf-8
+  shell_kind: posix              # posix | powershell | cmd（远端系统）
+  max_concurrency: 4             # 同一主机并发命令数上限
+  default_cwd: ~
+
+# ------------------------------------------------------------------ 安全策略
+policy:
+  # 黑名单（正则，命中即拒绝），保底防手抖
+  deny_commands:
+    - 'rm\s+-rf\s+/(\s|$)'
+    - ':\(\)\s*\{\s*:\|:&\s*\};:'      # fork bomb
+    - 'mkfs\.'
+    - 'dd\s+.*of=/dev/[sh]d[a-z]'
+  # 白名单（正则）：非空时命令必须命中其一，否则拒绝。想完全放手就留空。
+  allow_commands: []
+  max_command_timeout: 3600
+  max_output_bytes: 4194304       # 单次返回硬上限 4MB
+  allow_sudo: true
+  allow_upload: true
+  allow_download: true
+  allow_write_file: true
+  # 空 = 允许 hosts 里的全部；填了则只有列出的 alias 可用（多租户时隔离用）
+  allowed_hosts: []
+  dry_run: false                  # true = 只校验不执行（调试配置用）
+
+# ------------------------------------------------------------------ 审计日志
+audit:
+  enabled: true
+  path: ~/.ssh-mcp/audit.jsonl
+  max_bytes: 0                    # 0=不轮转；例如 10MB 写 10485760
+
+# ------------------------------------------------------------------ 主机清单
+hosts:
+  # 1) 私钥认证（最推荐）
+  prod-web-1:
+    host: 10.0.0.11
+    port: 22
+    user: deploy
+    description: 生产 Web 节点（nginx + gunicorn）
+    tags: [prod, web]
+    auth:
+      method: key
+      key_file: ~/.ssh/id_ed25519
+      # 私钥有密码时：从环境变量取，别写明文
+      key_passphrase_env: PROD_KEY_PASSPHRASE
+    sudo:
+      password_env: PROD_SUDO_PASS     # sudo 密码放环境变量
+      user: root
+    default_cwd: /srv/app
+
+  # 2) 密码认证：密码从环境变量或文件读，配置文件里不出现明文
+  prod-db-1:
+    host: 10.0.0.21
+    user: dbops
+    description: 生产数据库（只读运维）
+    tags: [prod, db]
+    auth:
+      method: password
+      password_env: PROD_DB_SSH_PASS
+      # 或者：password_file: C:\secrets\prod-db.pass
+    command_timeout: 300
+
+  # 3) 走 SSH agent（已 ssh-add 的机器最省事）
+  bastion:
+    host: 1.2.3.4
+    user: ops
+    description: 跳板机
+    tags: [jump]
+    auth:
+      method: agent
+      allow_agent: true
+
+  # 4) 经跳板机进入内网（proxy_jump 填同配置里的 alias）
+  inner-app-1:
+    host: 192.168.10.15
+    user: app
+    description: 内网应用机，经 bastion 转发
+    tags: [inner, app]
+    proxy_jump: bastion
+    auth:
+      method: key
+      key_file: ~/.ssh/id_ed25519
+
+  # 5) Windows 远端：命令用 cmd / powershell 包装
+  win-build:
+    host: 10.0.0.50
+    user: builder
+    description: Windows 构建机
+    tags: [ci, windows]
+    shell_kind: powershell
+    auth:
+      method: password
+      password_env: WIN_BUILD_PASS
