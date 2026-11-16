@@ -25,7 +25,11 @@ INSTRUCTIONS = """\
 3. 一次要在多台机跑同一条命令时用 `ssh_exec_batch`；
 4. 传/取文件用 `ssh_upload` / `ssh_download` / `ssh_write_file` / `ssh_read_file`；
 5. 命令输出默认会按上限截断，返回 truncated=true 时请用更精确的命令或重定向到文件再分段读取；
-6. `ssh_status` 看连接池与生效策略，`ssh_close` 回收连接，`ssh_reload_config` 热加载配置。
+6. `ssh_status` 看连接池与生效策略，`ssh_close` 回收连接，`ssh_reload_config` 热加载配置；
+
+需要真终端（top / vi / less / tail -f 这类）时用交互式 shell：
+`ssh_shell_open` → `ssh_shell_send`（回车是 \\r）→ 用完 `ssh_shell_close`。
+普通命令优先用 ssh_exec，交互 shell 会一直占着一条 channel。
 """
 
 
@@ -337,6 +341,91 @@ async def ssh_read_file(
 
 
 @mcp.tool()
+async def ssh_shell_open(
+    alias: Annotated[str, Field(description="主机别名")],
+    cols: Annotated[int, Field(description="终端列数，默认 120")] = 120,
+    rows: Annotated[int, Field(description="终端行数，默认 32")] = 32,
+    term: Annotated[str, Field(description="TERM 值，影响颜色与全屏程序行为")] = "xterm-256color",
+    command: Annotated[str | None, Field(description="可选：登录后立刻执行的命令，例如 'top'")] = None,
+) -> dict[str, Any]:
+    """开一个 PTY 交互式 shell（top / vi / less / tail -f 这类需要终端的程序可用）。
+
+    返回 session_id 和首屏输出。后续用 ssh_shell_send 发按键、ssh_shell_read 取输出、
+    ssh_shell_resize 改窗口大小、ssh_shell_close 关闭。别忘了关，否则会一直占着连接。
+    """
+    rt = runtime()
+    try:
+        out = await rt.pool.open_shell(alias, cols=cols, rows=rows, term=term, command=command)
+        _audit("shell_open", alias=alias, session_id=out["session_id"], size=f"{cols}x{rows}", command=command)
+        return {"ok": True, **out}
+    except Exception as exc:  # noqa: BLE001
+        _audit("shell_open_error", alias=alias, error=f"{type(exc).__name__}: {exc}")
+        return {"ok": False, "alias": alias, "error": f"{type(exc).__name__}: {exc}"}
+
+
+@mcp.tool()
+async def ssh_shell_send(
+    session_id: Annotated[str, Field(description="ssh_shell_open 返回的 session_id")],
+    data: Annotated[str, Field(description="要发送的按键内容；回车用 \\r，Ctrl-C 用 \\u0003")],
+    wait_ms: Annotated[int, Field(description="发完等多久没新输出就返回，默认 350ms")] = 350,
+    timeout_ms: Annotated[int, Field(description="本次最多等多久，默认 8000ms")] = 8000,
+) -> dict[str, Any]:
+    """往交互式 shell 发送按键/文本，并返回这段时间内的输出。
+
+    常见按键：回车 `\\r`、Ctrl-C `\\u0003`、Ctrl-D `\\u0004`、Esc `\\u001b`、
+    Tab `\\t`、退格 `\\u007f`、方向键 `\\u001b[A`/`[B`/`[C`/`[D`。
+    """
+    rt = runtime()
+    try:
+        out = await rt.pool.shell_send(
+            session_id, data, wait=max(0.05, wait_ms / 1000), timeout=max(0.2, timeout_ms / 1000)
+        )
+        _audit("shell_send", session_id=session_id, bytes=out["bytes"], closed=out["closed"])
+        return {"ok": True, **out}
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "session_id": session_id, "error": f"{type(exc).__name__}: {exc}"}
+
+
+@mcp.tool()
+async def ssh_shell_read(
+    session_id: Annotated[str, Field(description="ssh_shell_open 返回的 session_id")],
+    timeout_ms: Annotated[int, Field(description="最多等多久新输出，默认 1000ms")] = 1000,
+) -> dict[str, Any]:
+    """读交互式 shell 的新输出（不发送任何内容），适合观察 tail -f / 长任务的进展。"""
+    rt = runtime()
+    try:
+        out = await rt.pool.shell_read(session_id, timeout=max(0.1, timeout_ms / 1000))
+        return {"ok": True, **out}
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "session_id": session_id, "error": f"{type(exc).__name__}: {exc}"}
+
+
+@mcp.tool()
+async def ssh_shell_resize(
+    session_id: Annotated[str, Field(description="session_id")],
+    cols: Annotated[int, Field(description="新的列数")],
+    rows: Annotated[int, Field(description="新的行数")],
+) -> dict[str, Any]:
+    """调整交互式 shell 的终端大小（等价于拖拽终端窗口，全屏程序会重排）。"""
+    rt = runtime()
+    try:
+        return {"ok": True, **await rt.pool.shell_resize(session_id, cols, rows)}
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "session_id": session_id, "error": f"{type(exc).__name__}: {exc}"}
+
+
+@mcp.tool()
+async def ssh_shell_close(
+    session_id: Annotated[str, Field(description="要关闭的 session_id")],
+) -> dict[str, Any]:
+    """关闭交互式 shell 会话，释放对应的 channel。"""
+    rt = runtime()
+    out = await rt.pool.shell_close(session_id)
+    _audit("shell_close", session_id=session_id, existed=out.get("existed"))
+    return {"ok": True, **out}
+
+
+@mcp.tool()
 async def ssh_status() -> dict[str, Any]:
     """查看服务状态：已建立的连接、配置来源、策略与运行环境。"""
     rt = runtime()
@@ -360,6 +449,7 @@ async def ssh_status() -> dict[str, Any]:
             "last_error": rt.last_reload_error,
         },
         "connections": rt.pool.status(),
+        "shells": rt.pool.shell_list(),
     }
 
 

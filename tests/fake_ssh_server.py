@@ -101,6 +101,8 @@ class _ServerIface(paramiko.ServerInterface):
         self.password = password
         self.sftp_root = str(root)
         self.command: str | None = None
+        self.pty_size: tuple[int, int] = (0, 0)
+        self.shell_count = 0
 
     def check_auth_password(self, username, password):
         if username == self.username and password == self.password:
@@ -114,6 +116,56 @@ class _ServerIface(paramiko.ServerInterface):
         if kind == "session":
             return paramiko.OPEN_SUCCEEDED
         return paramiko.OPEN_FAILED_ADMINISTRATIVELY_PROHIBITED
+
+    # ---- 交互式 shell：假实现成「回显 + 少量内建命令」，够测协议链路 ----
+    def check_channel_pty_request(self, channel, term, width, height, pixelwidth, pixelheight, modes):
+        self.pty_size = (width, height)
+        channel._ssh_mcp_size = (width, height)  # noqa: SLF001
+        return True
+
+    def check_channel_window_change_request(self, channel, width, height, pixelwidth, pixelheight):
+        self.pty_size = (width, height)
+        channel._ssh_mcp_size = (width, height)  # noqa: SLF001
+        return True
+
+    def check_channel_shell_request(self, channel):
+        self.shell_count += 1
+        threading.Thread(target=self._shell_loop, args=(channel,), daemon=True).start()
+        return True
+
+    def _shell_loop(self, channel) -> None:
+        width, height = getattr(channel, "_ssh_mcp_size", (0, 0))  # noqa: SLF001
+        try:
+            channel.sendall(f"fake-pty {width}x{height}\r\n$ ".encode())
+            buf = b""
+            while channel.active:
+                if not channel.recv_ready():
+                    time.sleep(0.02)
+                    continue
+                data = channel.recv(4096)
+                if not data:
+                    break
+                channel.sendall(data)  # 终端会回显输入
+                buf += data
+                while b"\r" in buf or b"\n" in buf:
+                    sep = b"\r" if b"\r" in buf else b"\n"
+                    line, buf = buf.split(sep, 1)
+                    cmd = line.decode("utf-8", "replace").strip()
+                    if cmd in ("exit", "logout"):
+                        channel.sendall(b"bye\r\n")
+                        channel.close()
+                        return
+                    if cmd == "stty size":
+                        w, h = getattr(channel, "_ssh_mcp_size", (0, 0))  # noqa: SLF001
+                        channel.sendall(f"{h} {w}\r\n".encode())
+                    channel.sendall(b"$ ")
+        except Exception:  # noqa: BLE001
+            pass
+        finally:
+            try:
+                channel.close()
+            except Exception:  # noqa: BLE001
+                pass
 
     def check_channel_exec_request(self, channel, command):
         cmd = command.decode("utf-8", errors="replace")

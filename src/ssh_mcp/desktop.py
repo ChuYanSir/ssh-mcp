@@ -28,12 +28,14 @@ from pathlib import Path
 from typing import Any, Callable
 
 import tkinter as tk
+from tkinter import font as tkfont
 from tkinter import messagebox, ttk
 
 from . import server as srv
 from . import __author__, __author_email__, __github__, __version__
 from .config import ConfigError, Host
 from .config_store import cred_dir, delete_host, ensure_config, upsert_host
+from .pool import strip_ansi
 
 APP_TITLE = "ssh-mcp 桌面端"
 FONT = ("Microsoft YaHei UI", 9)
@@ -814,6 +816,272 @@ class AboutDialog(tk.Toplevel):
 
 
 # --------------------------------------------------------------------------- #
+# 交互式终端窗口：真 PTY，能跑 top / vi / less
+# --------------------------------------------------------------------------- #
+class ShellWindow(tk.Toplevel):
+    """一个真实的交互终端。按键按 xterm 语义翻译成字节发给远端 PTY。"""
+
+    KEY_SEQ = {
+        "Return": "\r",
+        "KP_Enter": "\r",
+        "BackSpace": "\x7f",
+        "Tab": "\t",
+        "ISO_Left_Tab": "\x1b[Z",
+        "Escape": "\x1b",
+        "Delete": "\x1b[3~",
+        "Insert": "\x1b[2~",
+        "Home": "\x1b[H",
+        "End": "\x1b[F",
+        "Prior": "\x1b[5~",
+        "Next": "\x1b[6~",
+        "Up": "\x1b[A",
+        "Down": "\x1b[B",
+        "Right": "\x1b[C",
+        "Left": "\x1b[D",
+        "F1": "\x1bOP",
+        "F2": "\x1bOQ",
+        "F3": "\x1bOR",
+        "F4": "\x1bOS",
+        "F5": "\x1b[15~",
+        "F6": "\x1b[17~",
+    }
+    MAX_LINES = 5000
+
+    def __init__(self, app: "App", alias: str) -> None:
+        super().__init__(app)
+        self.app = app
+        self.alias = alias
+        self.rt = app.rt
+        self.sid: str | None = None
+        self._closed = False
+        self._pending = 0
+        self._cols = 100
+        self._rows = 30
+        self._resize_job: str | None = None
+
+        self.title(f"交互终端 — {alias}")
+        self.geometry("980x620")
+        self.minsize(640, 400)
+        self.configure(bg=C["bg"])
+
+        head = tk.Frame(self, bg=C["card"])
+        head.pack(fill="x")
+        row = tk.Frame(head, bg=C["card"])
+        row.pack(fill="x", padx=12, pady=8)
+        tk.Label(row, text=alias, bg=C["card"], fg=C["txt"], font=FONT_BOLD).pack(side="left")
+        self.lbl_state = tk.Label(row, text="正在连接…", bg=C["chip_warn"], fg=C["warn"],
+                                  font=FONT_SM, padx=9, pady=2)
+        self.lbl_state.pack(side="left", padx=(10, 0))
+        self.lbl_size = tk.Label(row, text="", bg=C["card"], fg=C["dim"], font=FONT_SM)
+        self.lbl_size.pack(side="left", padx=(10, 0))
+
+        ttk.Button(row, text="清屏", style="Ghost.TButton", command=self.clear).pack(side="right")
+        ttk.Button(row, text="结束会话", style="Ghost.TButton", command=self.close_session).pack(
+            side="right", padx=(0, 6)
+        )
+        tk.Frame(head, height=1, bg=C["line"]).pack(fill="x")
+
+        wrap = tk.Frame(self, bg=C["term_bg"])
+        wrap.pack(fill="both", expand=True, padx=12, pady=12)
+        self.text = tk.Text(
+            wrap, wrap="char", font=MONO, relief="flat", bd=0, undo=False,
+            bg=C["term_bg"], fg=C["term_fg"], insertbackground=C["term_fg"],
+            padx=10, pady=8, highlightthickness=0,
+        )
+        self.text.pack(fill="both", expand=True)
+        self.text.tag_configure("sys", foreground="#7d8590")
+        self.text.configure(state="disabled")
+
+        tip = tk.Label(
+            self, text="按键直接发到远端 · Ctrl+Shift+C 复制选中 · Ctrl+V 粘贴 · Ctrl+C 发送中断",
+            bg=C["card"], fg=C["dim"], font=FONT_SM, anchor="w", padx=12, pady=5,
+        )
+        tip.pack(fill="x", side="bottom")
+
+        self.text.bind("<Key>", self._on_key)
+        self.text.bind("<Control-Shift-C>", self._copy)
+        self.text.bind("<Control-Shift-c>", self._copy)
+        self.text.bind("<Control-v>", self._paste)
+        self.text.bind("<Control-V>", self._paste)
+        self.text.bind("<Button-3>", self._menu)
+        self.bind("<Configure>", self._on_configure)
+        self.protocol("WM_DELETE_WINDOW", self.on_close)
+        self.after(120, self._open)
+        self.after(160, self._poll)
+
+    # ------------------------------------------------------------ 生命周期
+    def _open(self) -> None:
+        self.app.runner.submit(
+            self.rt.pool.open_shell(self.alias, cols=self._cols, rows=self._rows),
+            on_done=self._opened,
+            on_error=self._open_failed,
+        )
+
+    def _opened(self, payload: dict) -> None:
+        self.sid = payload["session_id"]
+        self._cols, self._rows = (int(x) for x in payload["info"]["size"].split("x"))
+        self.lbl_state.configure(text=f"● 已连接 {self.sid}", bg=C["chip_on"], fg=C["ok"])
+        self.lbl_size.configure(text=f"{self._cols}x{self._rows}")
+        self._write(payload.get("plain") or payload.get("output") or "")
+        self.text.focus_set()
+        self._apply_geometry()
+
+    def _open_failed(self, exc: BaseException) -> None:
+        self.lbl_state.configure(text="● 连接失败", bg="#fde8e8", fg="#b91c1c")
+        self._write(f"\n[打开失败] {type(exc).__name__}: {exc}\n", "sys")
+
+    def close_session(self) -> None:
+        if not self.sid:
+            return
+        sid = self.sid
+        self.sid = None
+        self.app.runner.submit(self.rt.pool.shell_close(sid))
+        self.lbl_state.configure(text="● 已结束", bg=C["chip_off"], fg=C["dim"])
+        self._write("\n[会话已结束]\n", "sys")
+
+    def on_close(self) -> None:
+        self._closed = True
+        self.close_session()
+        self.destroy()
+
+    # ---------------------------------------------------------------- 输出
+    def _write(self, text: str, tag: str | None = None) -> None:
+        if not text:
+            return
+        self.text.configure(state="normal")
+        self.text.insert("end", text, tag or ())
+        lines = int(self.text.index("end-1c").split(".")[0])
+        if lines > self.MAX_LINES:
+            self.text.delete("1.0", f"{lines - self.MAX_LINES}.0")
+        self.text.see("end")
+        self.text.configure(state="disabled")
+
+    def _poll(self) -> None:
+        if self._closed:
+            return
+        if self.sid and self._pending < 2:
+            self._pending += 1
+            self.app.runner.submit(
+                self.rt.pool.shell_read(self.sid, timeout=0.25),
+                on_done=self._polled,
+                on_error=self._poll_failed,
+            )
+        self.after(120, self._poll)
+
+    def _polled(self, payload: dict) -> None:
+        self._pending -= 1
+        text = payload.get("plain") or payload.get("output") or ""
+        if text:
+            self._write(text)
+        if payload.get("closed"):
+            self.lbl_state.configure(text="● 远端已关闭", bg=C["chip_off"], fg=C["dim"])
+            self.sid = None
+
+    def _poll_failed(self, exc: BaseException) -> None:
+        self._pending = max(0, self._pending - 1)
+        if not self.sid:
+            return
+        self._write(f"\n[读取失败] {type(exc).__name__}: {exc}\n", "sys")
+
+    def clear(self) -> None:
+        self.text.configure(state="normal")
+        self.text.delete("1.0", "end")
+        self.text.configure(state="disabled")
+
+    # ---------------------------------------------------------------- 输入
+    def _send(self, data: str) -> None:
+        if not self.sid:
+            return
+        # 回显由远端负责（PTY 会把输入 echo 回来），这里只发
+        self.app.runner.submit(self.rt.pool.shell_send(self.sid, data, wait=0.0, timeout=0.2))
+
+    def _on_key(self, event: tk.Event) -> str:
+        if not self.sid:
+            return "break"
+
+        # Ctrl+Shift+C / Ctrl+V 由单独的绑定处理
+        if event.keysym in ("C", "c") and (event.state & 0x4) and (event.state & 0x1):
+            return "break"
+
+        if event.keysym == "v" and (event.state & 0x4):
+            return "break"
+
+        seq = self.KEY_SEQ.get(event.keysym)
+        if seq is not None:
+            self._send(seq)
+            return "break"
+
+        # Ctrl+字母 → 控制字符
+        if event.state & 0x4 and len(event.keysym) == 1 and event.keysym.isalpha():
+            self._send(chr(ord(event.keysym.lower()) - 96))
+            return "break"
+
+        if event.char and event.char >= " ":
+            self._send(event.char)
+            return "break"
+        return "break"
+
+    def _copy(self, _event: tk.Event | None = None) -> str:
+        try:
+            sel = self.text.get("sel.first", "sel.last")
+        except tk.TclError:
+            return "break"
+        self.clipboard_clear()
+        self.clipboard_append(sel)
+        return "break"
+
+    def _paste(self, _event: tk.Event | None = None) -> str:
+        try:
+            data = self.clipboard_get()
+        except tk.TclError:
+            return "break"
+        self._send(data.replace("\n", "\r"))
+        return "break"
+
+    def _menu(self, event: tk.Event) -> None:
+        menu = tk.Menu(self, tearoff=0)
+        menu.add_command(label="复制选中", command=self._copy)
+        menu.add_command(label="粘贴", command=self._paste)
+        menu.add_separator()
+        menu.add_command(label="清屏", command=self.clear)
+        menu.add_command(label="结束会话", command=self.close_session)
+        try:
+            menu.tk_popup(event.x_root, event.y_root)
+        finally:
+            menu.grab_release()
+
+    # ---------------------------------------------------------------- 尺寸
+    def _apply_geometry(self) -> None:
+        """按当前字号算出行列数，让远端 PTY 和窗口一致。"""
+        try:
+            f = tkfont.Font(font=MONO)
+            char_w = max(1, f.measure("M"))
+            line_h = max(1, f.metrics("linespace"))
+        except Exception:  # noqa: BLE001
+            return
+        w = max(1, self.text.winfo_width())
+        h = max(1, self.text.winfo_height())
+        cols = max(10, min(500, (w - 20) // char_w))
+        rows = max(5, min(200, (h - 16) // line_h))
+        if (cols, rows) == (self._cols, self._rows):
+            return
+        self._cols, self._rows = cols, rows
+        self.lbl_size.configure(text=f"{cols}x{rows}")
+        if self.sid:
+            self.app.runner.submit(self.rt.pool.shell_resize(self.sid, cols, rows))
+
+    def _on_configure(self, event: tk.Event) -> None:
+        if event.widget is not self:
+            return
+        if self._resize_job is not None:
+            try:
+                self.after_cancel(self._resize_job)
+            except Exception:  # noqa: BLE001
+                pass
+        self._resize_job = self.after(250, self._apply_geometry)
+
+
+# --------------------------------------------------------------------------- #
 # 主窗口
 # --------------------------------------------------------------------------- #
 class App(tk.Tk):
@@ -1057,6 +1325,8 @@ class App(tk.Tk):
         ttk.Button(bar, text="删除", style="Ghost.TButton", command=self.on_delete).pack(side="left", padx=(2, 0))
         ttk.Separator(bar, orient="vertical").pack(side="left", fill="y", padx=12, pady=6)
         ttk.Button(bar, text="测试连接", style="Ghost.TButton", command=self.on_test).pack(side="left")
+        self.btn_shell = ttk.Button(bar, text="交互终端", style="Ghost.TButton", command=self.on_open_shell)
+        self.btn_shell.pack(side="left", padx=(2, 0))
         ttk.Button(bar, text="刷新", style="Ghost.TButton", command=self._refresh_hosts).pack(side="left", padx=(2, 0))
         ttk.Button(bar, text="MCP 配置", style="Ghost.TButton", command=self.show_mcp_config).pack(side="left", padx=(2, 0))
 
@@ -1510,6 +1780,16 @@ class App(tk.Tk):
             "args": ["-m", "ssh_mcp", "--transport", "stdio", "--config", str(self.cfg_path)],
         }
         return json.dumps({"mcpServers": {"ssh": entry}}, indent=2, ensure_ascii=False)
+
+    def on_open_shell(self) -> None:
+        alias = self._require_selection()
+        if not alias:
+            return
+        if not self.rt.cfg.policy.allow_shell:
+            messagebox.showinfo("已禁用", "policy.allow_shell=false，交互式终端被策略关闭", parent=self)
+            return
+        ShellWindow(self, alias)
+        self._term(f"# 已打开交互终端：{alias}（可跑 top / vi / less）", "dim")
 
     def show_mcp_config(self) -> None:
         dlg = McpConfigDialog(self)

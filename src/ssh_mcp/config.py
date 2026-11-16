@@ -209,6 +209,10 @@ class Policy:
     allow_upload: bool = True
     allow_download: bool = True
     allow_write_file: bool = True
+    # 交互式 shell / PTY
+    allow_shell: bool = True
+    shell_idle_timeout: float = 900.0  # 无操作多久自动关闭会话（秒）
+    max_shell_sessions: int = 8
     allowed_hosts: list[str] = field(default_factory=list)  # 空 = 允许配置里的全部
     dry_run: bool = False
 
@@ -250,6 +254,9 @@ class Policy:
             "allow_upload": self.allow_upload,
             "allow_download": self.allow_download,
             "allow_write_file": self.allow_write_file,
+            "allow_shell": self.allow_shell,
+            "shell_idle_timeout": self.shell_idle_timeout,
+            "max_shell_sessions": self.max_shell_sessions,
             "allowed_hosts": self.allowed_hosts or "all-configured",
             "dry_run": self.dry_run,
         }

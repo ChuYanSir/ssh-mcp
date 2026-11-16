@@ -10,9 +10,11 @@ from __future__ import annotations
 
 import hashlib
 import posixpath
+import re
 import shlex
 import threading
 import time
+import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
@@ -59,6 +61,57 @@ class SSHExecError(RuntimeError):
     """连接 / 通道层面的错误（不是远端命令非零退出）。"""
 
 
+class ShellError(RuntimeError):
+    """交互式 shell 会话层面的错误。"""
+
+
+_ANSI_RE = re.compile(
+    r"\x1b\[[0-9;?]*[ -/]*[@-~]"      # CSI
+    r"|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)"  # OSC
+    r"|\x1b[()][0-9A-Za-z]"           # 字符集切换 ESC ( B
+    r"|\x1b[@-Z\\-_]"                 # 其它单字符转义
+)
+_CTRL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]")
+
+
+def strip_ansi(text: str) -> str:
+    """去掉 ANSI 转义，只留可读文本（给不支持颜色的调用方 / 桌面端界面用）。"""
+    cleaned = _ANSI_RE.sub("", text)
+    cleaned = cleaned.replace("\r\n", "\n").replace("\r", "\n")
+    return _CTRL_RE.sub("", cleaned)
+
+
+@dataclass
+class ShellSession:
+    """一条 PTY 交互会话。所有 channel 操作都在它的锁里做。"""
+
+    sid: str
+    alias: str
+    host: Host
+    channel: paramiko.Channel
+    cols: int
+    rows: int
+    term: str
+    created_at: float = field(default_factory=time.time)
+    last_used: float = field(default_factory=time.time)
+    bytes_out: int = 0
+    closed: bool = False
+    lock: threading.Lock = field(default_factory=threading.Lock)
+
+    def info(self) -> dict[str, Any]:
+        return {
+            "session_id": self.sid,
+            "alias": self.alias,
+            "host": f"{self.host.host}:{self.host.port}",
+            "term": self.term,
+            "size": f"{self.cols}x{self.rows}",
+            "bytes_out": self.bytes_out,
+            "idle_seconds": int(time.time() - self.last_used),
+            "uptime_seconds": int(time.time() - self.created_at),
+            "closed": self.closed,
+        }
+
+
 @dataclass
 class _Chan:
     """一条已建立的连接及其运行统计。"""
@@ -88,6 +141,7 @@ class SSHPool:
         self._locks: dict[str, anyio.Lock] = {}
         self._sems: dict[str, anyio.Semaphore] = {}
         self._sftp_locks: dict[str, threading.Lock] = {}
+        self._shells: dict[str, ShellSession] = {}
         self._guard = threading.Lock()
 
     # ---------------------------------------------------------------- helpers
@@ -224,6 +278,12 @@ class SSHPool:
     async def close(self, alias: str | None = None) -> list[str]:
         closed: list[str] = []
         aliases = [alias] if alias else list(self._conns)
+        # 连接关了，挂在它上面的交互会话也一起收掉
+        with self._guard:
+            doomed = [sid for sid, s in self._shells.items() if alias is None or s.alias == alias]
+            sessions = [self._shells.pop(sid) for sid in doomed]
+        for sess in sessions:
+            self._close_shell_sync(sess)
         for a in aliases:
             conn = self._conns.pop(a, None)
             if conn is None:
@@ -234,6 +294,7 @@ class SSHPool:
 
     def close_sync_all(self) -> list[str]:
         """同步关闭所有连接（给配置热加载的后台清理线程用）。"""
+        self.close_all_shells()
         closed: list[str] = []
         for alias, conn in list(self._conns.items()):
             self._conns.pop(alias, None)
@@ -575,6 +636,237 @@ class SSHPool:
             "truncated": size > len(data),
             "content": data.decode(self.cfg.get(alias).encoding, errors="replace"),
         }
+
+    # ------------------------------------------------------------ shell / PTY
+    # 交互式会话：get_pty() + invoke_shell()，远端会把命令当成终端程序来跑，
+    # 所以 top / vi / less / 带颜色的日志都能正常工作。
+
+    def _reap_shells(self) -> None:
+        """关掉超时没动静的会话，防止忘了 close 一直挂着。"""
+        ttl = self.cfg.policy.shell_idle_timeout
+        now = time.time()
+        with self._guard:
+            dead = [sid for sid, s in self._shells.items() if now - s.last_used > ttl]
+            for sid in dead:
+                sess = self._shells.pop(sid, None)
+                if sess is not None:
+                    self._close_shell_sync(sess)
+
+    @staticmethod
+    def _close_shell_sync(sess: ShellSession) -> None:
+        with sess.lock:
+            sess.closed = True
+            try:
+                sess.channel.close()
+            except Exception:  # noqa: BLE001
+                pass
+
+    def _drain_shell(self, sess: ShellSession, *, idle: float, timeout: float, max_bytes: int) -> tuple[bytes, bool]:
+        """把 channel 上当前能读的数据全读走。
+
+        读到「连续 idle 秒没新数据」或「总时长超过 timeout」为止——这样一次
+        send 之后能拿到程序的完整一屏输出，而不是半截。
+        """
+        buf = bytearray()
+        deadline = time.monotonic() + timeout
+        last_data = time.monotonic()
+        while True:
+            got = False
+            while sess.channel.recv_ready():
+                chunk = sess.channel.recv(65536)
+                if not chunk:
+                    break
+                got = True
+                room = max_bytes - len(buf)
+                if room > 0:
+                    buf += chunk[:room]
+            while sess.channel.recv_stderr_ready():
+                chunk = sess.channel.recv_stderr(65536)
+                if not chunk:
+                    break
+                got = True
+                room = max_bytes - len(buf)
+                if room > 0:
+                    buf += chunk[:room]
+            now = time.monotonic()
+            if got:
+                last_data = now
+                continue
+            if sess.channel.closed or sess.channel.exit_status_ready():
+                sess.closed = True
+                break
+            if now - last_data >= idle or now >= deadline:
+                break
+            time.sleep(0.02)
+        return bytes(buf), sess.closed
+
+    def _shell_result(self, sess: ShellSession, raw: bytes) -> dict[str, Any]:
+        text = raw.decode(sess.host.encoding, errors="replace")
+        sess.bytes_out += len(raw)
+        sess.last_used = time.time()
+        return {
+            "session_id": sess.sid,
+            "alias": sess.alias,
+            "output": text,
+            "plain": strip_ansi(text),
+            "bytes": len(raw),
+            "closed": sess.closed,
+        }
+
+    def _open_shell_sync(
+        self, conn: _Chan, alias: str, cols: int, rows: int, term: str, command: str | None
+    ) -> ShellSession:
+        transport = conn.client.get_transport()
+        if transport is None or not transport.is_active():
+            raise ShellError(f"{alias} 的连接已断开")
+        chan = transport.open_session(timeout=15)
+        chan.get_pty(term=term, width=cols, height=rows)
+        chan.invoke_shell()
+        chan.settimeout(None)
+
+        sess = ShellSession(
+            sid=uuid.uuid4().hex[:12],
+            alias=alias,
+            host=conn.host,
+            channel=chan,
+            cols=cols,
+            rows=rows,
+            term=term,
+        )
+        if command:
+            try:
+                chan.send(command.encode(sess.host.encoding) + b"\n")
+            except Exception:  # noqa: BLE001
+                pass
+        return sess
+
+    async def open_shell(
+        self,
+        alias: str,
+        *,
+        cols: int = 120,
+        rows: int = 32,
+        term: str = "xterm-256color",
+        command: str | None = None,
+        wait: float = 0.6,
+        timeout: float = 10.0,
+    ) -> dict[str, Any]:
+        host = self.cfg.get(alias)
+        policy = self.cfg.policy
+        if not policy.allow_shell:
+            raise PermissionError("policy.allow_shell=false，禁止交互式 shell")
+        if command:
+            policy.check_command(command)
+        if not (10 <= cols <= 500 and 5 <= rows <= 200):
+            raise ValueError("cols 需在 10-500、rows 需在 5-200 之间")
+
+        self._reap_shells()
+        with self._guard:
+            active = sum(1 for s in self._shells.values() if not s.closed)
+            if active >= policy.max_shell_sessions:
+                raise ShellError(
+                    f"已达交互会话上限 {policy.max_shell_sessions}，先 ssh_shell_close 掉不用的"
+                )
+
+        conn = await self.get_conn(alias)
+        sess = await anyio.to_thread.run_sync(
+            lambda: self._open_shell_sync(conn, alias, cols, rows, term, command)
+        )
+        with self._guard:
+            self._shells[sess.sid] = sess
+
+        raw, _closed = await anyio.to_thread.run_sync(
+            lambda: self._drain_shell(sess, idle=wait, timeout=timeout, max_bytes=host.max_output_bytes)
+        )
+        result = self._shell_result(sess, raw)
+        result["info"] = sess.info()
+        result["hint"] = "用 ssh_shell_send 发送按键（回车用 \\r），ssh_shell_read 取后续输出"
+        return result
+
+    def _get_shell(self, sid: str) -> ShellSession:
+        with self._guard:
+            sess = self._shells.get(sid)
+        if sess is None:
+            raise ShellError(f"没有会话 {sid!r}；用 ssh_shell_open 新建，或用 ssh_status 看现有会话")
+        return sess
+
+    async def shell_send(
+        self,
+        sid: str,
+        data: str,
+        *,
+        wait: float = 0.35,
+        timeout: float = 8.0,
+    ) -> dict[str, Any]:
+        sess = self._get_shell(sid)
+        host = sess.host
+
+        def job() -> tuple[bytes, bool]:
+            with sess.lock:
+                if sess.closed:
+                    return b"", True
+                try:
+                    sess.channel.send(data.encode(host.encoding))
+                except Exception as exc:  # noqa: BLE001
+                    sess.closed = True
+                    raise ShellError(f"发送失败（会话可能已结束）: {exc}") from exc
+                return self._drain_shell(
+                    sess, idle=wait, timeout=timeout, max_bytes=host.max_output_bytes
+                )
+
+        raw, _closed = await anyio.to_thread.run_sync(job)
+        return self._shell_result(sess, raw)
+
+    async def shell_read(self, sid: str, *, timeout: float = 1.0) -> dict[str, Any]:
+        sess = self._get_shell(sid)
+
+        def job() -> tuple[bytes, bool]:
+            with sess.lock:
+                if sess.closed:
+                    return b"", True
+                return self._drain_shell(
+                    sess, idle=min(0.2, timeout), timeout=timeout, max_bytes=sess.host.max_output_bytes
+                )
+
+        raw, _closed = await anyio.to_thread.run_sync(job)
+        return self._shell_result(sess, raw)
+
+    async def shell_resize(self, sid: str, cols: int, rows: int) -> dict[str, Any]:
+        sess = self._get_shell(sid)
+        if not (10 <= cols <= 500 and 5 <= rows <= 200):
+            raise ValueError("cols 需在 10-500、rows 需在 5-200 之间")
+
+        def job() -> None:
+            with sess.lock:
+                if not sess.closed:
+                    sess.channel.resize_pty(width=cols, height=rows)
+                    sess.cols, sess.rows = cols, rows
+                    sess.last_used = time.time()
+
+        await anyio.to_thread.run_sync(job)
+        return {"session_id": sid, "size": f"{sess.cols}x{sess.rows}", "closed": sess.closed}
+
+    async def shell_close(self, sid: str) -> dict[str, Any]:
+        with self._guard:
+            sess = self._shells.pop(sid, None)
+        if sess is None:
+            return {"session_id": sid, "closed": True, "existed": False}
+        await anyio.to_thread.run_sync(lambda: self._close_shell_sync(sess))
+        return {"session_id": sid, "closed": True, "existed": True, "alias": sess.alias}
+
+    def shell_list(self) -> list[dict[str, Any]]:
+        self._reap_shells()
+        with self._guard:
+            sessions = list(self._shells.values())
+        return [s.info() for s in sorted(sessions, key=lambda s: s.created_at)]
+
+    def close_all_shells(self) -> list[str]:
+        with self._guard:
+            sessions = list(self._shells.items())
+            self._shells.clear()
+        for _sid, sess in sessions:
+            self._close_shell_sync(sess)
+        return [sid for sid, _ in sessions]
 
 
 def _ensure_remote_dir(sftp: paramiko.SFTPClient, remote_dir: str) -> None:

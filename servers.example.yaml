@@ -35,6 +35,10 @@ policy:
   allow_upload: true
   allow_download: true
   allow_write_file: true
+  # 交互式 shell / PTY（top、vi、less、tail -f 这类需要终端的程序）
+  allow_shell: true
+  shell_idle_timeout: 900        # 会话无操作多久自动关闭（秒）
+  max_shell_sessions: 8          # 同时最多几个交互会话
   # 空 = 允许 hosts 里的全部；填了则只有列出的 alias 可用（多租户时隔离用）
   allowed_hosts: []
   dry_run: false                  # true = 只校验不执行（调试配置用）

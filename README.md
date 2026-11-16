@@ -4,7 +4,7 @@
 配了一个原生桌面端（tkinter，无浏览器、无 Electron），增删主机就是在窗口里填表。
 
 > **作者**：[初颜Sir](https://github.com/ChuYanSir) · chuyansir@163.com
-> **仓库**：<https://github.com/ChuYanSir/ssh-mcp> · **版本**：v1.0.2
+> **仓库**：<https://github.com/ChuYanSir/ssh-mcp> · **版本**：v1.1.0
 
 [![ci](https://github.com/ChuYanSir/ssh-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/ChuYanSir/ssh-mcp/actions/workflows/ci.yml)
 [![release](https://github.com/ChuYanSir/ssh-mcp/actions/workflows/release.yml/badge.svg)](https://github.com/ChuYanSir/ssh-mcp/actions/workflows/release.yml)
@@ -251,6 +251,8 @@ proxy_jump: bastion                     # 经另一台已配置的 alias 进内�
 | `allow_commands` | 正则白名单，非空时命令必须命中其一 |
 | `max_command_timeout` / `max_output_bytes` | 单次硬上限 |
 | `allow_sudo` / `allow_upload` / `allow_download` / `allow_write_file` | 能力开关 |
+| `allow_shell` | 是否允许开交互式 shell（PTY） |
+| `shell_idle_timeout` / `max_shell_sessions` | 交互会话空闲多久自动关闭 / 最多几个 |
 | `allowed_hosts` | 非空时只放开列出的 alias（多租户隔离） |
 | `dry_run` | 只校验不执行 |
 
@@ -260,7 +262,7 @@ proxy_jump: bastion                     # 经另一台已配置的 alias 进内�
 
 ---
 
-## 6. 工具清单（12 个）
+## 6. 工具清单（17 个）
 
 | 工具 | 作用 |
 |---|---|
@@ -270,12 +272,63 @@ proxy_jump: bastion                     # 经另一台已配置的 alias 进内�
 | `ssh_check` | 握手探测 + 返回 `uname` / `id` / `date` |
 | `ssh_upload` / `ssh_download` | SFTP 双向传文件，返回 sha256 校验 |
 | `ssh_write_file` / `ssh_read_file` | 直接读写远端文本文件 |
-| `ssh_status` | 连接池状态 + 生效策略 + 配置来源 + 自动热加载统计（`autoload`） |
+| `ssh_status` | 连接池状态 + 生效策略 + 配置来源 + 自动热加载统计（`autoload`）+ 活动会话（`shells`） |
 | `ssh_close` | 主动断开连接（下次调用自动重连） |
 | `ssh_reload_config` | 强制重载 `servers.yaml` 并重连（配置变化平时会自动生效，这个用于立刻生效） |
 | `ssh_audit_tail` | 最近审计记录 |
+| **`ssh_shell_open`** | 开 PTY 交互会话，返回 `session_id` + 首屏输出 |
+| **`ssh_shell_send`** | 发送按键/文本并返回这段输出（回车 `\r`，Ctrl-C `\u0003`） |
+| **`ssh_shell_read`** | 只读新输出，用于观察 `tail -f` 之类 |
+| **`ssh_shell_resize`** | 改终端大小，全屏程序会重排 |
+| **`ssh_shell_close`** | 关闭会话，释放 channel |
 
-返回统一 JSON：`{alias, host, command, exit_code, ok, timed_out, truncated, duration_ms, stdout, stderr}`。
+`ssh_exec*` 返回：`{alias, host, command, exit_code, ok, timed_out, truncated, duration_ms, stdout, stderr}`。
+
+---
+
+## 6.1 交互式 shell（PTY）
+
+`ssh_exec` 每次都是「一次性命令」，没有终端，`top`、`vi`、`less`、`htop` 这类程序会直接报
+`TERM environment variable not set` 或者干脆不渲染。需要这些时必须走 PTY：
+
+```jsonc
+// 1) 开会话（可顺手带一条命令）
+ssh_shell_open { "alias": "测试服务器", "cols": 120, "rows": 32 }
+// → { "session_id": "abc123", "output": "Welcome to Ubuntu ...", "info": { "size": "120x32" } }
+
+// 2) 发按键：回车是 \r，不是 \n
+ssh_shell_send { "session_id": "abc123", "data": "top\r" }
+// → { "plain": "top - 09:43:13 up 2 days ... load average: 0.40", "closed": false }
+
+// 3) 退出全屏程序 / 关闭会话
+ssh_shell_send  { "session_id": "abc123", "data": "q" }
+ssh_shell_close { "session_id": "abc123" }
+```
+
+要点：
+
+- 返回值里 `output` 是**原始字节解码**（带 ANSI 色码），`plain` 是去掉转义后的可读文本，
+  按需要选；两者都受 `max_output_bytes` 限制。
+- `send` 会等到「连续 `wait_ms` 内没有新输出」才返回，所以一次就能拿到完整一屏；
+  长驻程序（`tail -f`）用 `ssh_shell_read` 轮询更合适。
+- 按键约定：回车 `\r`、Ctrl-C `\u0003`、Ctrl-D `\u0004`、Esc `\u001b`、Tab `\t`、
+  退格 `\u007f`、方向键 `\u001b[A`/`[B`/`[C`/`[D`。
+- 会话有上限（`policy.max_shell_sessions`，默认 8）和空闲回收
+  （`policy.shell_idle_timeout`，默认 900 秒）；断开连接或热加载配置时会一起关掉。
+- 关掉策略 `policy.allow_shell: false` 可以整体禁用这个能力。
+
+### 桌面端的交互终端
+
+工具栏「交互终端」按钮（选中主机后可用）会打开一个真正的终端窗口，按键直通远端 PTY：
+
+![交互终端](docs/ui-shell.png)
+
+- 窗口大小变化会自动 `resize_pty`，`top` 会跟着重排（截图里 133x35）；
+- 按键语义与 xterm 一致（方向键/Home/End/PgUp/PgDn/F1-F6、Ctrl+字母）；
+- `Ctrl+Shift+C` 复制选中、`Ctrl+V` 粘贴、`Ctrl+C` 发送中断、右键菜单；
+- 关窗口即关闭会话，不会在服务端留 channel。
+
+> 真实主机实测：`stty size` 返回设定尺寸、`top` 正常渲染、`vi` 编辑保存后 `cat` 能读到内容。
 
 ---
 
@@ -314,7 +367,8 @@ proxy_jump: bastion                     # 经另一台已配置的 alias 进内�
 - **桌面端保存后 yaml 注释没了**：`safe_dump` 不保留注释，原文件在 `servers.yaml.bak`；
   想保留注释就手写。
 
-**已知边界**：不提供交互式 shell、端口转发、SCP；一条 exec 只跑一条命令，多步用 `&&` 串。
+**已知边界**：端口转发、SCP 未提供（文件走 SFTP 工具）；一条 `ssh_exec` 只跑一条命令，多步用 `&&` 串；
+交互式程序要用交互式 shell（见 6.1）。
 
 ---
 
@@ -323,7 +377,7 @@ proxy_jump: bastion                     # 经另一台已配置的 alias 进内�
 ```powershell
 cd E:\Temp\AiWork\ssh-mcp
 $env:PYTHONIOENCODING='utf-8'
-.\.venv\Scripts\python.exe -m pytest tests -q        # 25 项：exec/退出码/截断/策略/SFTP/MCP stdio/配置读写/热加载
+.\.venv\Scripts\python.exe -m pytest tests -q        # 35 项：exec/截断/策略/SFTP/PTY shell/MCP stdio/配置读写/热加载
 .\.venv\Scripts\python.exe tests\http_probe.py       # HTTP + Bearer 401/200，且根路径必须 404
 .\.venv\Scripts\python.exe tests\desktop_demo.py     # 桌面端 + 假 SSH 后端（127.0.0.1 随机端口）
 .\.venv\Scripts\python.exe tests\probe_hosts.py      # 逐台探测 servers.yaml 里配置的 SSH 是否可达
