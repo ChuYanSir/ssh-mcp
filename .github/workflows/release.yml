@@ -89,24 +89,32 @@ jobs:
           ssh-mcp --help > /dev/null
           python -c "import ssh_mcp, ssh_mcp.desktop, ssh_mcp.pool; print('import ok', ssh_mcp.__version__)"
 
-      - name: Write release notes header
+      - name: Write release notes
         run: |
-          cat > notes.md <<'MD'
-          ## 安装
+          python - <<'PY'
+          import os, pathlib
+
+          v = os.environ["TAG"].lstrip("v")
+          body = f"""## 安装
 
           ```powershell
+          pip install ssh_mcp-{v}-py3-none-any.whl
+          # 或从源码装
           pip install ssh-mcp
-          # 或从下面的 wheel 直接装
-          pip install ssh_mcp-<version>-py3-none-any.whl
           ```
 
-          桌面端：`ssh-mcp-desktop`（或双击 `scripts/start-desktop.cmd`）。
-          MCP 服务：`ssh-mcp --transport stdio` / `ssh-mcp --transport http --port 8765 --token <token>`。
+          **桌面端**：`ssh-mcp-desktop`（Windows 上也可双击 `scripts\\start-desktop.cmd`）
+          **MCP 服务**：`ssh-mcp --transport stdio`；常驻用 `ssh-mcp --transport http --port 8765 --token <token>`
+          **接入客户端**：桌面端工具栏「MCP 配置」可直接复制 mcpServers JSON
 
-          MD
-          echo "" >> notes.md
-          echo "---" >> notes.md
-          echo "" >> notes.md
+          | 产物 | 说明 |
+          |---|---|
+          | `ssh_mcp-{v}-py3-none-any.whl` | 可 `pip install` 的 wheel（含桌面端） |
+          | `ssh_mcp-{v}.tar.gz` | 源码包 |
+          """
+          pathlib.Path("notes.md").write_text(body, encoding="utf-8")
+          print(body)
+          PY
 
       - name: Publish GitHub Release
         env:
@@ -114,8 +122,9 @@ jobs:
         run: |
           set -euo pipefail
           if gh release view "$TAG" >/dev/null 2>&1; then
-            echo "release $TAG 已存在，改为上传/覆盖资产"
+            echo "release $TAG 已存在，刷新正文并覆盖资产"
             gh release upload "$TAG" dist/* --clobber
+            gh release edit "$TAG" --notes-file notes.md
           else
             gh release create "$TAG" dist/* \
               --title "ssh-mcp $TAG" \
