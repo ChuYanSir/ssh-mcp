@@ -83,6 +83,18 @@ jobs:
           python -m build
           ls -l dist
 
+      # 防止再出现「tag 是 1.0.2、产物却叫 1.0.0」：产物名必须含 tag 的版本号
+      - name: Check artifact names match the tag
+        run: |
+          VERSION="${TAG#v}"
+          for f in dist/*; do
+            case "$f" in
+              *"$VERSION"*) ;;
+              *) echo "产物 $f 不含版本号 $VERSION"; exit 1 ;;
+            esac
+          done
+          echo "artifacts ok: $VERSION"
+
       - name: Verify artifacts
         run: |
           python -m pip install dist/*.whl

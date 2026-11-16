@@ -4,7 +4,9 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ssh-mcp"
-version = "1.0.0"
+# 版本单一来源：src/ssh_mcp/__init__.py 的 __version__
+# （release 工作流会校验 tag 与它一致，这里再静态写死一份迟早会不一致）
+dynamic = ["version"]
 description = "SSH broker MCP server: credentials stay server-side, clients only pass aliases"
 requires-python = ">=3.10"
 dependencies = [
@@ -13,6 +15,14 @@ dependencies = [
     "PyYAML>=6.0",
     "uvicorn>=0.30",
 ]
+
+[project.urls]
+Homepage = "https://github.com/ChuYanSir/ssh-mcp"
+Repository = "https://github.com/ChuYanSir/ssh-mcp"
+Issues = "https://github.com/ChuYanSir/ssh-mcp/issues"
+
+[tool.setuptools.dynamic]
+version = { attr = "ssh_mcp.__version__" }
 
 [project.optional-dependencies]
 dev = ["pytest>=8", "pytest-timeout>=2.3", "build>=1.2"]
