@@ -72,14 +72,21 @@ def tracked_files() -> list[Path]:
         out = subprocess.run(
             ["git", "ls-files"], cwd=ROOT, capture_output=True, text=True, check=True
         ).stdout
-        return [ROOT / line for line in out.splitlines() if line.strip()]
-    except Exception:  # noqa: BLE001 - 没有 git 时退回扫工作区
-        return [p for p in ROOT.rglob("*") if p.is_file()]
+        files = [ROOT / line for line in out.splitlines() if line.strip()]
+        if files:
+            return files
+    except Exception:  # noqa: BLE001 - 没有 git / 不是仓库
+        pass
+    return worktree_files()  # 注意：兜底也必须走带过滤的那份，别再单写一遍
 
 
 def worktree_files() -> list[Path]:
     skip = {".git", ".venv", "build", "dist", "__pycache__", "node_modules", ".pytest_cache"}
     return [p for p in ROOT.rglob("*") if p.is_file() and not (skip & set(p.parts))]
+
+
+# 本地私有配置：里面有真实主机地址是应该的，永远不参与扫描
+LOCAL_ONLY = {"servers.yaml", "servers.yaml.bak"}
 
 
 def is_public(ip: str) -> bool:
@@ -106,6 +113,8 @@ def scan(paths: list[Path]) -> list[str]:
             continue
         if path.name == "check_no_secrets.py":
             continue  # 本脚本自己就带着这些正则
+        if path.name in LOCAL_ONLY:
+            continue  # 私有配置，允许写真实地址
         try:
             text = path.read_text(encoding="utf-8")
         except (UnicodeDecodeError, OSError):
