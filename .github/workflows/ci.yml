@@ -52,6 +52,9 @@ jobs:
       - name: Byte-compile (catch syntax errors fast)
         run: python -m compileall -q src tests
 
+      - name: Guard against leaked IPs / secrets
+        run: python scripts/check_no_secrets.py
+
       - name: Run tests
         env:
           PYTHONIOENCODING: utf-8

@@ -82,7 +82,7 @@ hosts:
 
   # 3) 走 SSH agent（已 ssh-add 的机器最省事）
   bastion:
-    host: 1.2.3.4
+    host: 203.0.113.10          # 文档保留地址（RFC 5737），不是真实公网 IP
     user: ops
     description: 跳板机
     tags: [jump]

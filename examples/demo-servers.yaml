@@ -1,0 +1,59 @@
+# 演示用配置：主机、账号、路径全是虚构的
+# README 里的截图就是用这份配置跑出来的，不含任何真实服务器信息
+name: ssh-mcp-demo
+
+defaults:
+  host_key_policy: auto_add
+  keepalive: 30
+  shell_kind: posix
+  command_timeout: 120
+
+policy:
+  deny_commands:
+    - 'rm\s+-rf\s+/(\s|$)'
+    - 'mkfs\.'
+  allow_shell: true
+
+audit:
+  enabled: true
+  path: ~/.ssh-mcp/audit.jsonl
+
+hosts:
+  demo-web-1:
+    host: 10.0.0.11
+    port: 22
+    user: deploy
+    description: 生产 Web 节点（nginx + gunicorn）
+    tags: [prod, web]
+    auth:
+      method: key
+      key_file: ~/.ssh/id_ed25519
+    default_cwd: /srv/app
+
+  demo-db-1:
+    host: 10.0.0.21
+    user: dbops
+    description: 生产数据库（只读运维）
+    tags: [prod, db]
+    auth:
+      method: password
+      password_env: DEMO_DB_PASS
+    command_timeout: 300
+
+  demo-win:
+    host: 10.0.0.50
+    user: builder
+    description: Windows 构建机
+    tags: [ci, windows]
+    shell_kind: powershell
+    auth:
+      method: password
+      password_env: DEMO_WIN_PASS
+
+  demo-bastion:
+    host: 10.0.0.1
+    user: ops
+    description: 跳板机
+    tags: [jump]
+    auth:
+      method: agent

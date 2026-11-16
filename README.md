@@ -374,6 +374,25 @@ ssh_shell_close { "session_id": "abc123" }
 
 ## 9. 自测
 
+### 截图规范（重要）
+
+文档里的截图**必须**用 [`examples/demo-servers.yaml`](examples/demo-servers.yaml) 里的假主机
+（`10.0.0.11` / `10.0.0.21` / `10.0.0.50` / `10.0.0.1`）跑出来，禁止把真实服务器 IP、
+真实主机名、真实密码打进图片——图片里的字没法用 grep 拦住。
+
+```powershell
+.\.venv\Scripts\python.exe -m ssh_mcp.desktop --config examples\demo-servers.yaml
+```
+
+CI 里加了一道 [`scripts/check_no_secrets.py`](scripts/check_no_secrets.py)：扫描所有被 git 跟踪的
+文本文件，命中公网 IP（10/172.16/192.168/127/169.254 和 RFC 5737 文档段之外）、私钥块、
+GitHub/AWS token 或明文密码就失败。本地也能跑：
+
+```powershell
+.\.venv\Scripts\python.exe scripts\check_no_secrets.py        # 只查 tracked 文件
+.\.venv\Scripts\python.exe scripts\check_no_secrets.py --all-files
+```
+
 ```powershell
 cd E:\Temp\AiWork\ssh-mcp
 $env:PYTHONIOENCODING='utf-8'
