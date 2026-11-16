@@ -37,7 +37,34 @@ from .config_store import cred_dir, delete_host, ensure_config, upsert_host
 
 APP_TITLE = "ssh-mcp 桌面端"
 FONT = ("Microsoft YaHei UI", 9)
+FONT_SM = ("Microsoft YaHei UI", 8)
+FONT_BOLD = ("Microsoft YaHei UI", 9, "bold")
+FONT_BRAND = ("Microsoft YaHei UI", 13, "bold")
 MONO = ("Consolas", 9)
+
+# 配色（浅色、克制、接近 GitHub 的观感）
+C = {
+    "bg": "#f2f4f7",
+    "card": "#ffffff",
+    "stripe": "#fafbfc",
+    "line": "#e3e6ea",
+    "line2": "#cfd5dd",
+    "hover": "#eef1f5",
+    "head": "#f6f8fa",
+    "txt": "#1f2328",
+    "dim": "#6b7280",
+    "accent": "#2f6feb",
+    "accent_dark": "#1f5bd0",
+    "accent_soft": "#e8f0ff",
+    "ok": "#1a7f37",
+    "sel": "#e8f0fe",
+    "chip_off": "#eceff3",
+    "chip_on": "#e6f4ea",
+    "chip_warn": "#fff4e5",
+    "warn": "#8a5300",
+    "term_bg": "#0d1117",
+    "term_fg": "#c9d1d9",
+}
 LOG_PATH = Path.home() / ".ssh-mcp" / "logs" / "desktop.log"
 SERVICE_LOG = Path.home() / ".ssh-mcp" / "logs" / "service.log"
 SERVICE_STATE = Path.home() / ".ssh-mcp" / "service.json"
@@ -160,9 +187,9 @@ class HostDialog(tk.Toplevel):
 
         bar = ttk.Frame(self)
         bar.pack(fill="x", pady=(12, 0))
-        ttk.Label(bar, text="保存前会先校验配置，原文件备份为 .bak", foreground="#6b7a8d").pack(side="left")
+        ttk.Label(bar, text="保存前会先校验配置，原文件备份为 .bak", foreground=C["dim"]).pack(side="left")
         ttk.Button(bar, text="取消", command=self.destroy).pack(side="right")
-        ttk.Button(bar, text="保存", style="Accent.TButton", command=self.save).pack(side="right", padx=(0, 8))
+        ttk.Button(bar, text="保存", style="Primary.TButton", command=self.save).pack(side="right", padx=(0, 8))
 
         self.bind("<Escape>", lambda e: self.destroy())
         self.grab_set()
@@ -185,7 +212,7 @@ class HostDialog(tk.Toplevel):
         ent = ttk.Entry(parent, textvariable=var, width=width, font=FONT)
         ent.grid(row=row, column=1, sticky="we", pady=(0, 4))
         if tip:
-            ttk.Label(parent, text=tip, foreground="#6b7a8d").grid(row=row, column=2, sticky="w", padx=(8, 0))
+            ttk.Label(parent, text=tip, foreground=C["dim"]).grid(row=row, column=2, sticky="w", padx=(8, 0))
         return ent
 
     def _combo(self, parent: ttk.Frame, row: int, label: str, key: str, values: list[str], width: int = 32) -> ttk.Combobox:
@@ -250,7 +277,7 @@ class HostDialog(tk.Toplevel):
             row=1, column=1, sticky="we", pady=(0, 4)
         )
         self._field(self.frm_pw, 2, "环境变量名", "password_env", "选环境变量时填", 42)
-        self.lbl_pw_state = ttk.Label(self.frm_pw, text="", foreground="#6b7a8d")
+        self.lbl_pw_state = ttk.Label(self.frm_pw, text="", foreground=C["dim"])
         self.lbl_pw_state.grid(row=3, column=0, columnspan=2, sticky="w")
 
         self.frm_agent = ttk.Frame(f)
@@ -258,7 +285,7 @@ class HostDialog(tk.Toplevel):
         ttk.Label(
             self.frm_agent,
             text="使用本机 ssh-agent 里已加载的私钥（服务进程需要能看到该 agent）。",
-            foreground="#6b7a8d",
+            foreground=C["dim"],
         ).pack(anchor="w")
 
         sudo_box = ttk.LabelFrame(f, text="提权 sudo（可选）", padding=10)
@@ -283,7 +310,7 @@ class HostDialog(tk.Toplevel):
             row=3, column=1, sticky="we", pady=(0, 4)
         )
         self._field(sudo_box, 4, "sudo 环境变量名", "sudo_password_env", "", 42)
-        self.lbl_sudo_state = ttk.Label(sudo_box, text="", foreground="#6b7a8d")
+        self.lbl_sudo_state = ttk.Label(sudo_box, text="", foreground=C["dim"])
         self.lbl_sudo_state.grid(row=5, column=0, columnspan=2, sticky="w")
 
     def _build_adv(self, f: ttk.Frame) -> None:
@@ -638,7 +665,7 @@ class McpConfigDialog(tk.Toplevel):
         f_http = ttk.Frame(nb, padding=10)
         nb.add(f_http, text="  HTTP（服务模式，推荐）  ")
         if running:
-            ttk.Label(f_http, text=f"服务运行中：127.0.0.1:{port}", foreground="#15803d").pack(anchor="w", pady=(0, 6))
+            ttk.Label(f_http, text=f"服务运行中：127.0.0.1:{port}", foreground=C["ok"]).pack(anchor="w", pady=(0, 6))
         else:
             ttk.Label(
                 f_http,
@@ -649,15 +676,15 @@ class McpConfigDialog(tk.Toplevel):
         self.txt_http = self._code_box(f_http, app.build_http_config())
         row = ttk.Frame(f_http)
         row.pack(fill="x", pady=(8, 0))
-        self.lbl_http_copied = ttk.Label(row, text="", foreground="#15803d")
+        self.lbl_http_copied = ttk.Label(row, text="", foreground=C["ok"])
         self.lbl_http_copied.pack(side="left")
-        ttk.Button(row, text="复制 HTTP 配置", style="Accent.TButton",
+        ttk.Button(row, text="复制 HTTP 配置", style="Primary.TButton",
                    command=lambda: self._copy(self.txt_http, self.lbl_http_copied)).pack(side="right")
         ttk.Label(
             f_http,
             text="如果客户端把类型写成 http / streamable_http，把 \"type\" 的值改成它认的写法即可；"
                  "url 与 headers 不用动。",
-            foreground="#6b7a8d",
+            foreground=C["dim"],
             wraplength=620,
         ).pack(anchor="w", pady=(8, 0))
 
@@ -667,13 +694,13 @@ class McpConfigDialog(tk.Toplevel):
         ttk.Label(
             f_stdio,
             text="由客户端自己拉起一个子进程，适合单会话；不需要桌面端开着服务。",
-            foreground="#6b7a8d",
+            foreground=C["dim"],
             wraplength=620,
         ).pack(anchor="w", pady=(0, 6))
         self.txt_stdio = self._code_box(f_stdio, app.build_stdio_config())
         row2 = ttk.Frame(f_stdio)
         row2.pack(fill="x", pady=(8, 0))
-        self.lbl_stdio_copied = ttk.Label(row2, text="", foreground="#15803d")
+        self.lbl_stdio_copied = ttk.Label(row2, text="", foreground=C["ok"])
         self.lbl_stdio_copied.pack(side="left")
         ttk.Button(row2, text="复制 stdio 配置", command=lambda: self._copy(self.txt_stdio, self.lbl_stdio_copied)).pack(side="right")
 
@@ -682,7 +709,7 @@ class McpConfigDialog(tk.Toplevel):
         ttk.Label(
             bar,
             text=f"凭据全部留在本机：配置在 {app.cfg_path}，token 在 ~/.ssh-mcp/token",
-            foreground="#6b7a8d",
+            foreground=C["dim"],
         ).pack(side="left")
         ttk.Button(bar, text="关闭", command=self.destroy).pack(side="right")
 
@@ -732,34 +759,34 @@ class AboutDialog(tk.Toplevel):
         ttk.Label(
             self,
             text=f"版本 {__version__}    SSH 凭据留在服务端的 MCP 中间层",
-            foreground="#6b7a8d",
+            foreground=C["dim"],
         ).pack(anchor="w", pady=(2, 14))
 
         grid = ttk.Frame(self)
         grid.pack(fill="x")
         grid.columnconfigure(1, weight=1)
 
-        ttk.Label(grid, text="作者", foreground="#6b7a8d").grid(row=0, column=0, sticky="w", pady=(0, 6))
+        ttk.Label(grid, text="作者", foreground=C["dim"]).grid(row=0, column=0, sticky="w", pady=(0, 6))
         ttk.Label(grid, text=__author__).grid(row=0, column=1, sticky="w", padx=(12, 0), pady=(0, 6))
 
-        ttk.Label(grid, text="邮箱", foreground="#6b7a8d").grid(row=1, column=0, sticky="w", pady=(0, 6))
+        ttk.Label(grid, text="邮箱", foreground=C["dim"]).grid(row=1, column=0, sticky="w", pady=(0, 6))
         ttk.Label(grid, text=__author_email__).grid(row=1, column=1, sticky="w", padx=(12, 0), pady=(0, 6))
 
-        ttk.Label(grid, text="GitHub", foreground="#6b7a8d").grid(row=2, column=0, sticky="w", pady=(0, 6))
-        link = tk.Label(grid, text=__github__, fg="#0a66c2", cursor="hand2", font=("Microsoft YaHei UI", 9, "underline"))
+        ttk.Label(grid, text="GitHub", foreground=C["dim"]).grid(row=2, column=0, sticky="w", pady=(0, 6))
+        link = tk.Label(grid, text=__github__, fg=C["accent"], cursor="hand2", font=("Microsoft YaHei UI", 9, "underline"))
         link.grid(row=2, column=1, sticky="w", padx=(12, 0), pady=(0, 6))
         link.bind("<Button-1>", lambda e: self.open_github())
 
         ttk.Label(
             self,
             text="凭据只保存在本机；会话端只拿到别名。",
-            foreground="#6b7a8d",
+            foreground=C["dim"],
         ).pack(anchor="w", pady=(10, 0))
 
         bar = ttk.Frame(self)
         bar.pack(fill="x", pady=(16, 0))
         ttk.Button(bar, text="复制地址", command=self.copy_link).pack(side="left")
-        ttk.Button(bar, text="打开 GitHub", style="Accent.TButton", command=self.open_github).pack(side="left", padx=(8, 0))
+        ttk.Button(bar, text="打开 GitHub", style="Primary.TButton", command=self.open_github).pack(side="left", padx=(8, 0))
         ttk.Button(bar, text="关闭", command=self.destroy).pack(side="right")
 
         self.bind("<Escape>", lambda e: self.destroy())
@@ -816,35 +843,224 @@ class App(tk.Tk):
         if created:
             self._term(f"# 已创建新配置：{config_path}", "dim")
             self._term("# 点「新增主机」开始；凭据只保存在本机，界面不会回显密码。", "dim")
+        else:
+            self._term("# 选择左侧主机后，在下方输入命令、回车执行（需要 root 时勾选 sudo）", "dim")
 
     # ----------------------------------------------------------------- style
     def _init_style(self) -> None:
         style = ttk.Style(self)
         try:
-            style.theme_use("vista")
+            style.theme_use("clam")  # clam 才能完全自定义配色；vista 会忽略大部分颜色
         except tk.TclError:
-            style.theme_use("clam")
+            pass
+
         self.option_add("*Font", FONT)
-        style.configure(".", font=FONT)
-        style.configure("Treeview", rowheight=26, font=FONT, fieldbackground="#ffffff")
-        style.configure("Treeview.Heading", font=("Microsoft YaHei UI", 9, "bold"))
-        style.configure("Accent.TButton", font=("Microsoft YaHei UI", 9, "bold"))
-        style.configure("Hint.TLabel", foreground="#6b7a8d")
-        style.configure("Status.TLabel", foreground="#4b5563")
+        style.configure(".", font=FONT, background=C["bg"], foreground=C["txt"])
+
+        # ---- 按钮 ----------------------------------------------------
+        style.configure(
+            "TButton",
+            font=FONT,
+            padding=(12, 6),
+            background=C["card"],
+            foreground=C["txt"],
+            bordercolor=C["line"],
+            lightcolor=C["card"],
+            darkcolor=C["card"],
+            focuscolor=C["card"],
+            relief="flat",
+        )
+        style.map(
+            "TButton",
+            background=[("pressed", C["line"]), ("active", C["hover"])],
+            bordercolor=[("active", C["line2"])],
+        )
+        style.configure(
+            "Primary.TButton",
+            background=C["accent"],
+            foreground="#ffffff",
+            bordercolor=C["accent"],
+            lightcolor=C["accent"],
+            darkcolor=C["accent"],
+            focuscolor=C["accent"],
+            font=FONT_BOLD,
+        )
+        style.map(
+            "Primary.TButton",
+            background=[("disabled", C["line2"]), ("pressed", C["accent_dark"]), ("active", C["accent_dark"])],
+            foreground=[("disabled", C["dim"])],
+            bordercolor=[("disabled", C["line2"]), ("active", C["accent_dark"])],
+            lightcolor=[("active", C["accent_dark"])],
+            darkcolor=[("active", C["accent_dark"])],
+        )
+        style.configure("Ghost.TButton", background=C["bg"], bordercolor=C["bg"])
+        style.map("Ghost.TButton", background=[("active", C["hover"])], bordercolor=[("active", C["line"])])
+
+        style.configure("TMenubutton", font=FONT, padding=(12, 6), background=C["card"],
+                        bordercolor=C["line"], relief="flat", arrowcolor=C["dim"])
+        style.map("TMenubutton", background=[("active", C["hover"])])
+
+        # ---- 输入 ----------------------------------------------------
+        style.configure(
+            "TEntry",
+            fieldbackground="#ffffff",
+            bordercolor=C["line"],
+            lightcolor=C["line"],
+            darkcolor=C["line"],
+            padding=(6, 5),
+            insertcolor=C["txt"],
+        )
+        style.map("TEntry", bordercolor=[("focus", C["accent"])], lightcolor=[("focus", C["accent"])])
+        style.configure(
+            "TCombobox",
+            fieldbackground="#ffffff",
+            background="#ffffff",
+            bordercolor=C["line"],
+            lightcolor=C["line"],
+            darkcolor=C["line"],
+            padding=(6, 4),
+            arrowcolor=C["dim"],
+        )
+        style.map("TCombobox", fieldbackground=[("readonly", "#ffffff")], bordercolor=[("focus", C["accent"])])
+        style.configure("TCheckbutton", background=C["card"], foreground=C["txt"], focuscolor=C["card"])
+        style.map("TCheckbutton", background=[("active", C["card"])])
+
+        # ---- 表格 ----------------------------------------------------
+        style.configure(
+            "Treeview",
+            background=C["card"],
+            fieldbackground=C["card"],
+            foreground=C["txt"],
+            rowheight=30,
+            borderwidth=0,
+            font=FONT,
+        )
+        style.map(
+            "Treeview",
+            background=[("selected", C["sel"])],
+            foreground=[("selected", C["txt"])],
+        )
+        style.configure(
+            "Treeview.Heading",
+            background=C["head"],
+            foreground=C["dim"],
+            font=("Microsoft YaHei UI", 9, "bold"),
+            relief="flat",
+            borderwidth=0,
+            padding=(8, 9),
+        )
+        style.map("Treeview.Heading", background=[("active", C["hover"])])
+        # 去掉 treeview 外边那圈 3D 边框
+        style.layout("Treeview", [("Treeview.treearea", {"sticky": "nswe"})])
+
+        style.configure("TSeparator", background=C["line"])
+        style.configure("TPanedwindow", background=C["bg"])
+        style.configure("Sash", sashthickness=8, gripcount=0, background=C["bg"])
+
+        # ---- 容器（对话框里的分页与分组框）------------------------------
+        style.configure("TNotebook", background=C["bg"], borderwidth=0, tabmargins=(0, 4, 0, 0))
+        style.configure(
+            "TNotebook.Tab",
+            padding=(16, 7),
+            font=FONT,
+            background=C["bg"],
+            foreground=C["dim"],
+            borderwidth=0,
+        )
+        style.map(
+            "TNotebook.Tab",
+            background=[("selected", C["card"])],
+            foreground=[("selected", C["accent"])],
+            font=[("selected", FONT_BOLD)],
+        )
+        style.configure(
+            "TLabelframe",
+            background=C["bg"],
+            bordercolor=C["line"],
+            lightcolor=C["line"],
+            darkcolor=C["line"],
+            relief="solid",
+            borderwidth=1,
+        )
+        style.configure(
+            "TLabelframe.Label", background=C["bg"], foreground=C["dim"], font=FONT_SM
+        )
+
+        # ---- 文字 ----------------------------------------------------
+        style.configure("Hint.TLabel", background=C["card"], foreground=C["dim"])
+        style.configure("Status.TLabel", background=C["card"], foreground=C["dim"], padding=(0, 0))
+        style.configure("CardTitle.TLabel", background=C["card"], foreground=C["txt"], font=FONT_BOLD)
+        style.configure("CardHint.TLabel", background=C["card"], foreground=C["dim"])
+        style.configure("Chip.TLabel", background=C["accent_soft"], foreground=C["accent_dark"], padding=(7, 1))
 
     # -------------------------------------------------------------------- ui
-    def _build_ui(self) -> None:
-        bar = ttk.Frame(self, padding=(12, 10, 12, 6))
-        bar.pack(fill="x")
-        ttk.Button(bar, text="新增主机", style="Accent.TButton", command=self.on_add).pack(side="left")
-        ttk.Button(bar, text="编辑", command=self.on_edit).pack(side="left", padx=(6, 0))
-        ttk.Button(bar, text="删除", command=self.on_delete).pack(side="left", padx=(6, 0))
-        ttk.Separator(bar, orient="vertical").pack(side="left", fill="y", padx=12)
-        ttk.Button(bar, text="测试连接", command=self.on_test).pack(side="left")
-        ttk.Button(bar, text="刷新", command=self._refresh_hosts).pack(side="left", padx=(6, 0))
-        ttk.Button(bar, text="MCP 配置", style="Accent.TButton", command=self.show_mcp_config).pack(side="left", padx=(6, 0))
+    def _card(self, parent: tk.Widget, title: str = "", hint: str = "") -> tuple[tk.Frame, tk.Frame, tk.Frame]:
+        """白底细边框的卡片，返回 (卡片, 内容区, 标题栏)。"""
+        card = tk.Frame(parent, bg=C["card"], highlightbackground=C["line"], highlightthickness=1, bd=0)
+        head = tk.Frame(card, bg=C["card"])
+        head.pack(fill="x", padx=14, pady=(11, 8))
+        if title:
+            tk.Label(head, text=title, bg=C["card"], fg=C["txt"], font=FONT_BOLD).pack(side="left")
+        if hint:
+            tk.Label(head, text=hint, bg=C["card"], fg=C["dim"], font=FONT_SM).pack(side="left", padx=(8, 0))
+        tk.Frame(card, height=1, bg=C["line"]).pack(fill="x")
+        body = tk.Frame(card, bg=C["card"])
+        body.pack(fill="both", expand=True, padx=14, pady=12)
+        return card, body, head
 
-        more = ttk.Menubutton(bar, text="更多")
+    def _build_ui(self) -> None:
+        # ============================================================ 顶部品牌区
+        head = tk.Frame(self, bg=C["card"])
+        head.pack(fill="x")
+        row = tk.Frame(head, bg=C["card"])
+        row.pack(fill="x", padx=16, pady=(11, 10))
+
+        brand = tk.Frame(row, bg=C["card"])
+        brand.pack(side="left")
+        tk.Label(brand, text="ssh-mcp", bg=C["card"], fg=C["txt"], font=FONT_BRAND).pack(side="left")
+        tk.Label(
+            brand, text=f"v{__version__}", bg=C["accent_soft"], fg=C["accent_dark"], font=FONT_SM, padx=7, pady=1
+        ).pack(side="left", padx=(8, 10))
+        tk.Label(
+            brand, text="凭据留在服务端的 MCP 中间层", bg=C["card"], fg=C["dim"], font=FONT_SM
+        ).pack(side="left")
+
+        # 服务控制（右侧）。注意 pack(side="right") 是「先 pack 的靠最右」，
+        # 所以这里按视觉上从右往左的顺序摆放。
+        svc = tk.Frame(row, bg=C["card"])
+        svc.pack(side="right")
+
+        self.lbl_service = tk.Label(
+            svc, text="● 未启动", bg=C["chip_off"], fg=C["dim"], font=FONT_SM, padx=9, pady=3
+        )
+        self.lbl_service.pack(side="right")
+
+        self.btn_service = ttk.Button(svc, text="启动 MCP 服务", style="Primary.TButton", command=self.toggle_service)
+        self.btn_service.pack(side="right", padx=(10, 8))
+
+        self.var_token = tk.StringVar(value="")
+        ttk.Entry(svc, textvariable=self.var_token, width=13, show="•").pack(side="right", padx=(0, 10))
+        tk.Label(svc, text="Token", bg=C["card"], fg=C["dim"], font=FONT_SM).pack(side="right", padx=(0, 5))
+
+        self.var_port = tk.StringVar(value="8765")
+        ttk.Entry(svc, textvariable=self.var_port, width=6, justify="center").pack(side="right")
+        tk.Label(svc, text="端口", bg=C["card"], fg=C["dim"], font=FONT_SM).pack(side="right", padx=(0, 5))
+
+        tk.Frame(self, height=1, bg=C["line"]).pack(fill="x")
+
+        # ============================================================ 工具栏
+        bar = tk.Frame(self, bg=C["bg"])
+        bar.pack(fill="x", padx=14, pady=(12, 8))
+
+        ttk.Button(bar, text="＋ 新增主机", style="Primary.TButton", command=self.on_add).pack(side="left")
+        ttk.Button(bar, text="编辑", style="Ghost.TButton", command=self.on_edit).pack(side="left", padx=(10, 0))
+        ttk.Button(bar, text="删除", style="Ghost.TButton", command=self.on_delete).pack(side="left", padx=(2, 0))
+        ttk.Separator(bar, orient="vertical").pack(side="left", fill="y", padx=12, pady=6)
+        ttk.Button(bar, text="测试连接", style="Ghost.TButton", command=self.on_test).pack(side="left")
+        ttk.Button(bar, text="刷新", style="Ghost.TButton", command=self._refresh_hosts).pack(side="left", padx=(2, 0))
+        ttk.Button(bar, text="MCP 配置", style="Ghost.TButton", command=self.show_mcp_config).pack(side="left", padx=(2, 0))
+
+        more = ttk.Menubutton(bar, text="更多 ▾", style="Ghost.TButton")
         menu = tk.Menu(more, tearoff=0)
         menu.add_command(label="打开 servers.yaml", command=self.on_open_config)
         menu.add_command(label="打开凭据目录", command=self.on_open_creds)
@@ -857,92 +1073,118 @@ class App(tk.Tk):
         more["menu"] = menu
         more.pack(side="left", padx=(6, 0))
 
-        svc = ttk.Frame(bar)
-        svc.pack(side="right")
-        ttk.Label(svc, text="端口").pack(side="left", padx=(0, 4))
-        self.var_port = tk.StringVar(value="8765")
-        ttk.Entry(svc, textvariable=self.var_port, width=6).pack(side="left")
-        ttk.Label(svc, text="Token").pack(side="left", padx=(8, 4))
-        self.var_token = tk.StringVar(value="")
-        ttk.Entry(svc, textvariable=self.var_token, width=12, show="•").pack(side="left")
-        self.btn_service = ttk.Button(svc, text="启动 MCP 服务", command=self.toggle_service)
-        self.btn_service.pack(side="left", padx=(8, 0))
-        self.lbl_service = ttk.Label(svc, text="● 未启动", style="Status.TLabel")
-        self.lbl_service.pack(side="left", padx=(8, 0))
+        # ============================================================ 主体
+        body = tk.Frame(self, bg=C["bg"])
+        body.pack(fill="both", expand=True, padx=14, pady=(0, 6))
 
-        body = ttk.PanedWindow(self, orient="horizontal")
-        body.pack(fill="both", expand=True, padx=12, pady=(0, 8))
+        pw = ttk.PanedWindow(body, orient="horizontal")
+        pw.pack(fill="both", expand=True)
 
-        left = ttk.Frame(body)
+        # ---------------- 左：主机列表 ----------------
+        left_wrap = tk.Frame(pw, bg=C["bg"])
+        card, inner, chead = self._card(left_wrap, "主机列表")
+        card.pack(fill="both", expand=True)
+        inner.pack_configure(padx=0, pady=(0, 0))
+        self.lbl_host_count = tk.Label(chead, text="0 台", bg=C["card"], fg=C["dim"], font=FONT_SM)
+        self.lbl_host_count.pack(side="right")
+
+        tree_wrap = tk.Frame(inner, bg=C["card"])
+        tree_wrap.pack(fill="both", expand=True, pady=(2, 10), padx=(12, 12))
         cols = ("alias", "target", "user", "auth", "tags", "state")
-        self.tree = ttk.Treeview(left, columns=cols, show="headings", selectmode="browse")
+        self.tree = ttk.Treeview(tree_wrap, columns=cols, show="headings", selectmode="browse")
         for key, text, width, anchor in (
-            ("alias", "别名", 130, "w"),
-            ("target", "目标", 150, "w"),
-            ("user", "用户", 90, "w"),
-            ("auth", "认证", 70, "w"),
-            ("tags", "标签", 120, "w"),
-            ("state", "状态", 70, "w"),
+            ("alias", "别名", 140, "w"),
+            ("target", "目标", 160, "w"),
+            ("user", "用户", 95, "w"),
+            ("auth", "认证", 72, "w"),
+            ("tags", "标签", 130, "w"),
+            ("state", "状态", 84, "w"),
         ):
-            self.tree.heading(key, text=text)
+            self.tree.heading(key, text=text, anchor=anchor)
             self.tree.column(key, width=width, anchor=anchor, stretch=(key in ("target", "tags")))
-        self.tree.tag_configure("online", foreground="#15803d")
-        self.tree.tag_configure("offline", foreground="#6b7280")
+        # 斑马纹 + 状态色（tk 的 tag 谁先定义谁优先，所以按「状态_斑马」组合定义）
+        for i, bg in enumerate((C["card"], C["stripe"])):
+            self.tree.tag_configure(f"on_{i}", background=bg, foreground=C["ok"])
+            self.tree.tag_configure(f"off_{i}", background=bg, foreground=C["dim"])
+        self.tree.tag_configure("state_on", foreground=C["ok"])
         self.tree.bind("<<TreeviewSelect>>", lambda e: self._on_select())
         self.tree.bind("<Double-1>", lambda e: self.on_edit())
-        sb = ttk.Scrollbar(left, orient="vertical", command=self.tree.yview)
+        sb = ttk.Scrollbar(tree_wrap, orient="vertical", command=self.tree.yview)
         self.tree.configure(yscrollcommand=sb.set)
         self.tree.pack(side="left", fill="both", expand=True)
         sb.pack(side="right", fill="y")
-        body.add(left, weight=3)
+        pw.add(left_wrap, weight=3)
 
-        right = ttk.Frame(body)
-        body.add(right, weight=4)
+        # ---------------- 右：详情 + 终端 ----------------
+        right = tk.Frame(pw, bg=C["bg"])
+        pw.add(right, weight=4)
 
-        detail = ttk.LabelFrame(right, text=" 主机详情 ", padding=10)
-        detail.pack(fill="x")
-        self.detail = tk.Text(detail, height=8, wrap="word", font=FONT, relief="flat", bg="#ffffff", padx=8, pady=6)
+        dcard, dinner, _dhead = self._card(right, "主机详情")
+        dcard.pack(fill="x", padx=(10, 0))
+        dinner.pack_configure(padx=14, pady=(10, 12))
+        self.detail = tk.Text(
+            dinner, height=10, wrap="word", font=FONT, relief="flat", bd=0,
+            bg=C["card"], fg=C["txt"], padx=0, pady=0, cursor="arrow",
+            highlightthickness=0,
+        )
         self.detail.pack(fill="x")
-        self.detail.tag_configure("k", foreground="#6b7a8d")
-        self.detail.tag_configure("v", foreground="#111827")
+        self.detail.tag_configure("k", foreground=C["dim"])
+        self.detail.tag_configure("v", foreground=C["txt"])
+        self.detail.tag_configure("alias", foreground=C["txt"], font=("Microsoft YaHei UI", 11, "bold"))
+        self.detail.tag_configure("sub", foreground=C["dim"])
         self.detail.configure(state="disabled")
 
-        term = ttk.LabelFrame(right, text=" 命令终端 ", padding=(10, 8))
-        term.pack(fill="both", expand=True, pady=(10, 0))
-        self.terminal = tk.Text(term, wrap="word", font=MONO, relief="flat", bg="#0d1117", fg="#d6e2f0", padx=10, pady=8)
-        self.terminal.pack(fill="both", expand=True)
+        tcard, tinner, thead = self._card(right, "命令终端")
+        tcard.pack(fill="both", expand=True, padx=(10, 0), pady=(10, 0))
+        tinner.pack_configure(padx=0, pady=0)
+        self.lbl_term_target = tk.Label(
+            thead, text="未选择主机", bg=C["accent_soft"], fg=C["accent_dark"], font=FONT_SM, padx=8, pady=1
+        )
+        self.lbl_term_target.pack(side="right")
+
+        self.terminal = tk.Text(
+            tinner, height=8, wrap="word", font=MONO, relief="flat", bd=0,
+            bg=C["term_bg"], fg=C["term_fg"], padx=12, pady=10,
+            insertbackground=C["term_fg"], highlightthickness=0,
+        )
+        self.terminal.pack(fill="both", expand=True, pady=(10, 0), padx=12)
         self.terminal.tag_configure("cmd", foreground="#7ee787")
         self.terminal.tag_configure("err", foreground="#ff7b72")
-        self.terminal.tag_configure("dim", foreground="#8b98a8")
-        self.terminal.tag_configure("out", foreground="#d6e2f0")
+        self.terminal.tag_configure("dim", foreground="#7d8590")
+        self.terminal.tag_configure("out", foreground="#c9d1d9")
         self.terminal.configure(state="disabled")
 
-        cmdbar = ttk.Frame(term)
-        cmdbar.pack(fill="x", pady=(8, 0))
+        cmdbar = tk.Frame(tinner, bg=C["card"])
+        cmdbar.pack(fill="x", padx=12, pady=10)
         self.var_sudo_exec = tk.BooleanVar(value=False)
         ttk.Checkbutton(cmdbar, text="sudo", variable=self.var_sudo_exec).pack(side="left")
         self.var_cmd = tk.StringVar()
         self.ent_cmd = ttk.Entry(cmdbar, textvariable=self.var_cmd, font=MONO)
-        self.ent_cmd.pack(side="left", fill="x", expand=True, padx=8)
+        self.ent_cmd.pack(side="left", fill="x", expand=True, padx=(10, 8))
         self.ent_cmd.bind("<Return>", lambda e: self.on_run())
         self.ent_cmd.configure(state="disabled")
-        self.btn_run = ttk.Button(cmdbar, text="执行", command=self.on_run, state="disabled")
+        self.btn_run = ttk.Button(cmdbar, text="执行", style="Primary.TButton", width=7,
+                                  command=self.on_run, state="disabled")
         self.btn_run.pack(side="left")
 
-        self.status = ttk.Label(self, text="", style="Status.TLabel", padding=(12, 4))
-        self.status.pack(fill="x", side="bottom")
+        # ============================================================ 状态栏
+        tk.Frame(self, height=1, bg=C["line"]).pack(fill="x", side="bottom")
+        sbar = tk.Frame(self, bg=C["card"])
+        sbar.pack(fill="x", side="bottom")
 
-        # 作者信息常驻状态栏右侧，点击打开「关于」
-        self.credit = ttk.Label(
-            self,
-            text=f"by {__author__}  ·  {__github__.replace('https://', '')}",
-            foreground="#0a66c2",
-            cursor="hand2",
-            padding=(12, 4),
+        self.credit = tk.Label(
+            sbar,
+            text=f"{__author__}  ·  {__github__.replace('https://', '')}",
+            bg=C["card"], fg=C["accent"], font=FONT_SM, cursor="hand2", padx=14, pady=6,
         )
-        self.credit.pack(fill="x", side="bottom", anchor="e")
-        self.credit.configure(anchor="e")
+        self.credit.pack(side="right")
         self.credit.bind("<Button-1>", lambda e: self.show_about())
+        self.credit.bind("<Enter>", lambda e: self.credit.configure(font=(FONT_SM[0], FONT_SM[1], "underline")))
+        self.credit.bind("<Leave>", lambda e: self.credit.configure(font=FONT_SM))
+
+        self.status = tk.Label(sbar, text="", bg=C["card"], fg=C["dim"], font=FONT_SM,
+                               padx=14, pady=6, anchor="w")
+        self.status.pack(side="left", fill="x", expand=True)
 
     # ------------------------------------------------------------- formatting
     def _term(self, text: str, tag: str = "out") -> None:
@@ -977,7 +1219,7 @@ class App(tk.Tk):
         conns = {c["alias"]: c for c in self.rt.pool.status()}
         keep = self._current
         self.tree.delete(*self.tree.get_children())
-        for alias, host in sorted(cfg.hosts.items()):
+        for i, (alias, host) in enumerate(sorted(cfg.hosts.items())):
             connected = bool(conns.get(alias, {}).get("connected"))
             self.tree.insert(
                 "",
@@ -989,10 +1231,13 @@ class App(tk.Tk):
                     host.user or "-",
                     AUTH_LABEL.get(host.auth.method, host.auth.method),
                     ", ".join(host.tags) or "-",
-                    "在线" if connected else "未连接",
+                    "● 在线" if connected else "○ 未连接",
                 ),
-                tags=("online" if connected else "offline",),
+                tags=((f"on_{i % 2}" if connected else f"off_{i % 2}"),),
             )
+        if hasattr(self, "lbl_host_count"):
+            online = sum(1 for c in conns.values() if c.get("connected"))
+            self.lbl_host_count.configure(text=f"{len(cfg.hosts)} 台 · 在线 {online}")
         if keep and self.tree.exists(keep):
             self.tree.selection_set(keep)
             self._on_select()
@@ -1003,11 +1248,14 @@ class App(tk.Tk):
     def _update_status(self) -> None:
         rt = self.rt
         online = sum(1 for c in rt.pool.status() if c["connected"])
+        audit = "开" if rt.cfg.audit.enabled else "关"
+        sudo = "开" if rt.cfg.policy.allow_sudo else "关"
+        deny = len(rt.cfg.policy.deny_commands)
         self.status.configure(
-            text=f"配置：{self.cfg_path}    主机 {len(rt.cfg.hosts)}    在线 {online}    "
-            f"审计：{'开' if rt.cfg.audit.enabled else '关'}    "
-            f"策略：sudo {'开' if rt.cfg.policy.allow_sudo else '关'} / "
-            f"黑名单 {len(rt.cfg.policy.deny_commands)} 条"
+            text=(
+                f"{self.cfg_path}   ·   主机 {len(rt.cfg.hosts)} / 在线 {online}"
+                f"   ·   审计 {audit}   ·   sudo {sudo}   ·   黑名单 {deny} 条"
+            )
         )
 
     def _show_detail_empty(self) -> None:
@@ -1033,42 +1281,45 @@ class App(tk.Tk):
         self._current = alias
         self.ent_cmd.configure(state="normal")
         self.btn_run.configure(state="normal")
+        if hasattr(self, "lbl_term_target"):
+            self.lbl_term_target.configure(text=f"目标：{alias}")
         self._show_detail(host)
 
     def _show_detail(self, host: Host) -> None:
         d = host.describe()
         auth = d["auth"]
         lines: list[tuple[str, str]] = [
-            ("别名", f"{d['alias']}    {d['description'] or ''}\n"),
-            ("目标", f"{d['host']}:{d['port']}    用户 {d['user'] or '-'}    shell {d['shell_kind']}\n"),
+            ("__alias__", d["alias"]),
+            ("__sub__", d["description"] or "（无说明）"),
+            ("地址", f"{d['host']}:{d['port']}"),
+            ("用户", d["user"] or "-"),
+            ("远端 shell", d["shell_kind"] + (f" / {d['posix_shell']}" if d["shell_kind"] == "posix" else "")),
             (
                 "认证",
-                f"{AUTH_LABEL.get(auth['method'], auth['method'])}"
+                AUTH_LABEL.get(auth["method"], auth["method"])
                 + (f"    私钥 {auth['key_file']}" if auth.get("key_file") else "")
-                + (f"    密码来源 {auth['password_source']}" if auth.get("password_source") else "")
-                + "\n",
+                + (f"    密码来源 {auth['password_source']}" if auth.get("password_source") else ""),
             ),
         ]
         if d.get("sudo"):
             sudo = d["sudo"]
             lines.append(
-                ("sudo", f"已启用    用户 {sudo.get('user') or 'root'}    密码来源 {sudo.get('password_source') or '无(NOPASSWD)'}\n")
+                ("sudo", f"已启用    用户 {sudo.get('user') or 'root'}    密码来源 {sudo.get('password_source') or '无(NOPASSWD)'}")
             )
-        lines.append(
-            (
-                "其它",
-                f"标签 {', '.join(d['tags']) or '-'}    "
-                f"超时 {d['command_timeout']}s    host key {d['host_key_policy']}    "
-                f"并发 {d['max_concurrency']}"
-                + (f"    跳板 {d['proxy_jump']}" if d.get("proxy_jump") else "")
-                + "\n",
-            )
-        )
+        lines.append(("标签", ", ".join(d["tags"]) or "-"))
+        lines.append(("超时 / 并发", f"{d['command_timeout']}s / {d['max_concurrency']}"))
+        lines.append(("host key", d["host_key_policy"] + (f"    跳板 {d['proxy_jump']}" if d.get("proxy_jump") else "")))
+
         self.detail.configure(state="normal")
         self.detail.delete("1.0", "end")
         for key, value in lines:
-            self.detail.insert("end", f"{key}：", "k")
-            self.detail.insert("end", value, "v")
+            if key == "__alias__":
+                self.detail.insert("end", value + "\n", "alias")
+            elif key == "__sub__":
+                self.detail.insert("end", value + "\n\n", "sub")
+            else:
+                self.detail.insert("end", f"{key}  ", "k")
+                self.detail.insert("end", value + "\n", "v")
         self.detail.configure(state="disabled")
 
     # --------------------------------------------------------------- actions
@@ -1337,7 +1588,7 @@ class App(tk.Tk):
             return
 
         self._starting = True
-        self.lbl_service.configure(text=f"● 启动中 :{port}", foreground="#b45309")
+        self.lbl_service.configure(text=f"● 启动中 :{port}", foreground=C["warn"], bg=C["chip_warn"])
         self._term(f"# 正在启动 MCP 服务 127.0.0.1:{port}（独立进程 pid {res.get('pid')}）…", "dim")
         self._term("# 关掉桌面端也不影响它；日志见 更多 → 打开服务日志", "dim")
         log_line(f"service spawn pid={res.get('pid')} port={port} token={'yes' if token else 'no'}")
@@ -1366,13 +1617,17 @@ class App(tk.Tk):
     def _sync_service_ui(self) -> None:
         st = self.service.status()
         if st["running"] and st["managed"]:
-            self.lbl_service.configure(text=f"● 运行中 :{st['port']}  pid {st['pid']}", foreground="#15803d")
+            self.lbl_service.configure(
+                text=f"● 运行中 :{st['port']}  pid {st['pid']}", foreground=C["ok"], bg=C["chip_on"]
+            )
             self.btn_service.configure(text="停止 MCP 服务")
         elif st["running"]:
-            self.lbl_service.configure(text=f"● 运行中（外部）:{st['port']}", foreground="#15803d")
+            self.lbl_service.configure(
+                text=f"● 运行中（外部）:{st['port']}", foreground=C["ok"], bg=C["chip_on"]
+            )
             self.btn_service.configure(text="启动 MCP 服务")
         else:
-            self.lbl_service.configure(text="● 未启动", foreground="#6b7280")
+            self.lbl_service.configure(text="● 未启动", foreground=C["dim"], bg=C["chip_off"])
             self.btn_service.configure(text="启动 MCP 服务")
 
     def _poll_service(self) -> None:
