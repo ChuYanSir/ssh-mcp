@@ -53,6 +53,9 @@ jobs:
         run: python -m compileall -q src tests
 
       - name: Guard against leaked IPs / secrets
+        env:
+          PYTHONIOENCODING: utf-8
+          PYTHONUTF8: "1"
         run: python scripts/check_no_secrets.py
 
       - name: Run tests

@@ -21,6 +21,14 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 
+# Windows 的 CI 控制台默认是 cp1252/cp437，打印中文会 UnicodeEncodeError，
+# 于是「检查通过」变成了退出码 1。先把输出编码掰到 UTF-8。
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[union-attr]
+    except (AttributeError, ValueError):
+        pass
+
 # 允许出现的地址：内网、回环、链路本地、文档保留段（RFC 5737）
 ALLOWED_NETS = [
     ipaddress.ip_network(n)
