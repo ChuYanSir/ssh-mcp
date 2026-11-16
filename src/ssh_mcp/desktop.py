@@ -1085,6 +1085,28 @@ class ShellWindow(tk.Toplevel):
 # --------------------------------------------------------------------------- #
 # 检查更新 / 升级
 # --------------------------------------------------------------------------- #
+def build_http_config(port: str, token: str) -> str:
+    """「MCP 配置」里的 HTTP 那段 JSON（纯函数，方便测试，不依赖 Tk）。"""
+    port = (port or "8765").strip() or "8765"
+    token = (token or "").strip()
+    entry: dict[str, Any] = {"type": "streamable-http", "url": f"http://127.0.0.1:{port}/mcp"}
+    if token:
+        entry["headers"] = {"Authorization": f"Bearer {token}"}
+    return json.dumps({"mcpServers": {"ssh": entry}}, indent=2, ensure_ascii=False)
+
+
+def build_stdio_config(cfg_path: Path | str, python: str | None = None) -> str:
+    """stdio 那段 JSON。pythonw 下必须换成 python.exe——stdio 要往 stdout 写协议。"""
+    exe = Path(python or sys.executable)
+    if exe.name.lower() == "pythonw.exe":
+        exe = exe.with_name("python.exe")
+    entry = {
+        "command": str(exe),
+        "args": ["-m", "ssh_mcp", "--transport", "stdio", "--config", str(cfg_path)],
+    }
+    return json.dumps({"mcpServers": {"ssh": entry}}, indent=2, ensure_ascii=False)
+
+
 def _plain_markdown(text: str) -> str:
     """把 release 正文里的 markdown 简化成能在 Text 里直接读的样子（不做完整渲染）。"""
     out: list[str] = []
@@ -1881,23 +1903,10 @@ class App(tk.Tk):
 
     # --------------------------------------------------------------- service
     def build_http_config(self) -> str:
-        port = self.var_port.get().strip() or "8765"
-        token = self.var_token.get().strip()
-        entry: dict[str, Any] = {"type": "streamable-http", "url": f"http://127.0.0.1:{port}/mcp"}
-        if token:
-            entry["headers"] = {"Authorization": f"Bearer {token}"}
-        return json.dumps({"mcpServers": {"ssh": entry}}, indent=2, ensure_ascii=False)
+        return build_http_config(self.var_port.get().strip(), self.var_token.get().strip())
 
     def build_stdio_config(self) -> str:
-        exe = Path(sys.executable)
-        if exe.name.lower() == "pythonw.exe":
-            # stdio 要往 stdout 写协议，必须是带控制台的 python.exe
-            exe = exe.with_name("python.exe")
-        entry = {
-            "command": str(exe),
-            "args": ["-m", "ssh_mcp", "--transport", "stdio", "--config", str(self.cfg_path)],
-        }
-        return json.dumps({"mcpServers": {"ssh": entry}}, indent=2, ensure_ascii=False)
+        return build_stdio_config(self.cfg_path)
 
     def on_open_shell(self) -> None:
         alias = self._require_selection()

@@ -78,34 +78,32 @@ def _tk_available() -> bool:
 
 
 @pytest.mark.skipif(not _tk_available(), reason="没有可用的图形环境")
-def test_mcp_config_json_builders(tmp_path: Path, monkeypatch):
+def test_mcp_config_json_builders(tmp_path: Path):
+    """纯函数，不创建 Tk root —— 之前用 App() 会偶发 Tcl 时序错误。"""
     import json
 
     cfg = tmp_path / "servers.yaml"
     cfg.write_text("name: t\nhosts: {}\n", encoding="utf-8")
-    monkeypatch.setenv("SSH_MCP_CRED_DIR", str(tmp_path / "creds"))
 
-    app = desktop.App(cfg)
-    app.withdraw()
-    try:
-        app.var_port.set("9123")
-        app.var_token.set("tok-123")
+    http_cfg = json.loads(desktop.build_http_config("9123", "tok-123"))
+    entry = http_cfg["mcpServers"]["ssh"]
+    assert entry["type"] == "streamable-http"
+    assert entry["url"] == "http://127.0.0.1:9123/mcp"
+    assert entry["headers"]["Authorization"] == "Bearer tok-123"
 
-        http_cfg = json.loads(app.build_http_config())
-        entry = http_cfg["mcpServers"]["ssh"]
-        assert entry["type"] == "streamable-http"
-        assert entry["url"] == "http://127.0.0.1:9123/mcp"
-        assert entry["headers"]["Authorization"] == "Bearer tok-123"
+    no_auth = json.loads(desktop.build_http_config("9123", ""))["mcpServers"]["ssh"]
+    assert "headers" not in no_auth
+    assert json.loads(desktop.build_http_config("", ""))["mcpServers"]["ssh"]["url"].endswith(":8765/mcp")
 
-        app.var_token.set("")
-        no_auth = json.loads(app.build_http_config())["mcpServers"]["ssh"]
-        assert "headers" not in no_auth
+    stdio_cfg = json.loads(desktop.build_stdio_config(cfg))["mcpServers"]["ssh"]
+    assert stdio_cfg["args"][:2] == ["-m", "ssh_mcp"]
+    assert "--transport" in stdio_cfg["args"] and "stdio" in stdio_cfg["args"]
+    assert str(cfg) in stdio_cfg["args"]
+    # stdio 必须用带控制台的 python.exe（pythonw 的 stdout 是 None）
+    assert not stdio_cfg["command"].lower().endswith("pythonw.exe")
 
-        stdio_cfg = json.loads(app.build_stdio_config())["mcpServers"]["ssh"]
-        assert stdio_cfg["args"][:2] == ["-m", "ssh_mcp"]
-        assert "--transport" in stdio_cfg["args"] and "stdio" in stdio_cfg["args"]
-        assert str(cfg) in stdio_cfg["args"]
-        # stdio 必须用带控制台的 python.exe（pythonw 的 stdout 是 None）
-        assert not stdio_cfg["command"].lower().endswith("pythonw.exe")
-    finally:
-        app.destroy()
+    # 显式传 pythonw 时也要换成 python.exe
+    fake = Path(sys.executable).with_name("pythonw.exe")
+    swapped = json.loads(desktop.build_stdio_config(cfg, str(fake)))["mcpServers"]["ssh"]
+    assert swapped["command"].lower().endswith("python.exe")
+    assert not swapped["command"].lower().endswith("pythonw.exe")
