@@ -30,6 +30,7 @@ dev = ["pytest>=8", "pytest-timeout>=2.3", "build>=1.2"]
 [project.scripts]
 ssh-mcp = "ssh_mcp.__main__:main"
 ssh-mcp-desktop = "ssh_mcp.desktop:main"
+ssh-mcp-update = "ssh_mcp.update:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

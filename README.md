@@ -1,10 +1,10 @@
-# ssh-mcp
+﻿# ssh-mcp
 
 把 SSH 凭据收进一个中间服务：客户端会话只拿 `alias` 就能执行命令，**永远看不到用户名、密码、私钥**。
 配了一个原生桌面端（tkinter，无浏览器、无 Electron），增删主机就是在窗口里填表。
 
 > **作者**：[初颜Sir](https://github.com/ChuYanSir) · chuyansir@163.com
-> **仓库**：<https://github.com/ChuYanSir/ssh-mcp> · **版本**：v1.1.0
+> **仓库**：<https://github.com/ChuYanSir/ssh-mcp> · **版本**：v1.2.0
 
 [![ci](https://github.com/ChuYanSir/ssh-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/ChuYanSir/ssh-mcp/actions/workflows/ci.yml)
 [![release](https://github.com/ChuYanSir/ssh-mcp/actions/workflows/release.yml/badge.svg)](https://github.com/ChuYanSir/ssh-mcp/actions/workflows/release.yml)
@@ -434,7 +434,36 @@ git push origin v1.0.1
 
 ---
 
-## 10. 作者与许可
+## 10. 检查更新
+
+桌面端会通过 GitHub Releases 检查有没有新版本，不需要你去仓库看。
+
+![检查更新](docs/ui-update.png)
+
+行为：
+
+- **启动 4 秒后静默查一次**，有更新才弹窗；没更新只在终端面板留一行。同一个窗口 6 小时内不重复查（避免 GitHub API 限流）。
+- **更多 ▾ → 检查更新…** 手动触发，无视上面的时间限制。
+- 发现新版本时，工具栏的「更多」会变成 `更多 ▾  ⬆1.2.0`，菜单里那一项也会改成「有新版本 1.2.0，查看」。
+- 弹窗里显示当前/最新版本、发布日期、release 说明（markdown 粗略转成纯文本），三个按钮：
+  - **立即更新**：下载 release 里的 `*.whl` → `python -m pip install --upgrade <wheel>`，装完问要不要重启；
+  - **打开发布页**：浏览器打开 release 页面手动下载；
+  - **稍后**：关掉，徽标保留。
+- 源码 `pip install -e .` 安装时会禁用「立即更新」，并提示用 `git pull` + 重装 —— 用 wheel 覆盖可编辑安装会把包弄乱。
+- 网络不通、API 403 限流、release 没附 wheel，都会给出人话提示而不是堆栈。
+
+命令行也能查：
+
+```powershell
+ssh-mcp-update                 # 或 python -m ssh_mcp.update
+ssh-mcp-update --current 1.0.0 # 假装是旧版本，看看会不会提示更新
+```
+
+> 网络失败只影响这一个功能，不影响 SSH 相关的一切。
+
+---
+
+## 11. 作者与许可
 
 | | |
 |---|---|

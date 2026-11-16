@@ -33,6 +33,7 @@ from tkinter import messagebox, ttk
 
 from . import server as srv
 from . import __author__, __author_email__, __github__, __version__
+from . import update as updater
 from .config import ConfigError, Host
 from .config_store import cred_dir, delete_host, ensure_config, upsert_host
 from .pool import strip_ansi
@@ -1082,6 +1083,111 @@ class ShellWindow(tk.Toplevel):
 
 
 # --------------------------------------------------------------------------- #
+# 检查更新 / 升级
+# --------------------------------------------------------------------------- #
+def _plain_markdown(text: str) -> str:
+    """把 release 正文里的 markdown 简化成能在 Text 里直接读的样子（不做完整渲染）。"""
+    out: list[str] = []
+    for line in (text or "").splitlines():
+        s = line.rstrip()
+        if s.strip().startswith("```"):
+            continue
+        if s.strip().startswith("|") and set(s.strip()) <= set("|-: "):
+            continue  # 表格分隔行
+        s = s.replace("**", "").replace("`", "")
+        if s.lstrip().startswith("#"):
+            s = s.lstrip("#").strip()
+        if s.strip().startswith("|"):
+            cells = [c.strip() for c in s.strip().strip("|").split("|")]
+            s = "  |  ".join(c for c in cells if c)
+        out.append(s)
+    # 压缩多余空行
+    cleaned: list[str] = []
+    for line in out:
+        if not line.strip() and cleaned and not cleaned[-1].strip():
+            continue
+        cleaned.append(line)
+    return "\n".join(cleaned).strip()
+
+
+class UpdateDialog(tk.Toplevel):
+    def __init__(self, app: "App", result: dict) -> None:
+        super().__init__(app)
+        self.app = app
+        self.result = result
+        info = result.get("info") or {}
+        self.info = info
+
+        self.title("发现新版本")
+        self.transient(app)
+        self.resizable(True, True)
+        self.configure(bg=C["card"], padx=18, pady=16)
+
+        tk.Label(self, text=f"ssh-mcp {info.get('version', '?')}", bg=C["card"], fg=C["txt"],
+                 font=FONT_BRAND).pack(anchor="w")
+        tk.Label(
+            self,
+            text=f"当前 {result.get('current')}  ·  最新 {result.get('latest')}  ·  "
+                 f"发布 {(info.get('published_at') or '')[:10]}",
+            bg=C["card"], fg=C["dim"], font=FONT_SM,
+        ).pack(anchor="w", pady=(2, 10))
+
+        tk.Label(self, text="更新说明", bg=C["card"], fg=C["dim"], font=FONT_SM).pack(anchor="w")
+        notes = tk.Text(self, height=12, width=78, wrap="word", font=FONT, relief="flat",
+                        bg=C["bg"], fg=C["txt"], padx=10, pady=8, highlightthickness=1,
+                        highlightbackground=C["line"])
+        notes.insert("1.0", _plain_markdown(info.get("notes") or "") or "（这个 release 没有写说明）")
+        notes.configure(state="disabled")
+        notes.pack(fill="both", expand=True, pady=(4, 10))
+
+        hint = ""
+        if updater.is_editable_install():
+            hint = "当前是源码可编辑安装，建议 git pull 后在 .venv 里 pip install -e . 手动更新"
+        elif not info.get("has_wheel"):
+            hint = "这个 release 没有附带 wheel，只能打开发布页手动下载"
+        if hint:
+            tk.Label(self, text=hint, bg=C["card"], fg=C["warn"], font=FONT_SM, wraplength=620,
+                     justify="left").pack(anchor="w", pady=(0, 8))
+
+        bar = tk.Frame(self, bg=C["card"])
+        bar.pack(fill="x")
+        ttk.Button(bar, text="打开发布页", style="Ghost.TButton", command=self.open_page).pack(side="left")
+        ttk.Button(bar, text="稍后", style="Ghost.TButton", command=self.destroy).pack(side="right")
+        self.btn_install = ttk.Button(
+            bar, text="立即更新", style="Primary.TButton",
+            command=self.install,
+            state=("normal" if info.get("has_wheel") and not updater.is_editable_install() else "disabled"),
+        )
+        self.btn_install.pack(side="right", padx=(0, 8))
+
+        self.bind("<Escape>", lambda e: self.destroy())
+        self.geometry("680x520")
+        self.update_idletasks()
+        px = app.winfo_rootx() + (app.winfo_width() - 680) // 2
+        py = app.winfo_rooty() + (app.winfo_height() - 520) // 2
+        self.geometry(f"680x520+{max(px, 0)}+{max(py, 0)}")
+
+    def open_page(self) -> None:
+        try:
+            import webbrowser
+
+            webbrowser.open(self.info.get("url") or updater.RELEASES_PAGE)
+        except Exception as exc:  # noqa: BLE001
+            messagebox.showerror("打开失败", str(exc), parent=self)
+
+    def install(self) -> None:
+        self.btn_install.configure(state="disabled", text="更新中…")
+        self.app.begin_update(self.info, on_finish=lambda ok: self._finish(ok))
+
+    def _finish(self, ok: bool) -> None:
+        if not self.winfo_exists():
+            return
+        self.btn_install.configure(text=("已安装" if ok else "重试"), state=("disabled" if ok else "normal"))
+        if ok:
+            self.after(600, self.destroy)
+
+
+# --------------------------------------------------------------------------- #
 # 主窗口
 # --------------------------------------------------------------------------- #
 class App(tk.Tk):
@@ -1094,6 +1200,11 @@ class App(tk.Tk):
         self._current: str | None = None
         self.service = LocalService(config_path)
         self._starting = False
+        self._checking_update = False
+        self._update_result: dict | None = None
+        self._last_pct = 0
+        self._last_update_check = 0.0
+        self._update_dialog: UpdateDialog | None = None
 
         self.title(f"{APP_TITLE} — {config_path}")
         self.geometry("1280x800")
@@ -1105,6 +1216,8 @@ class App(tk.Tk):
         self._refresh_hosts()
         self._sync_service_ui()
         self.after(3000, self._poll_service)
+        # 启动后静默查一次更新（有网就查，失败只在终端留一行，不打扰）
+        self.after(4000, lambda: self.check_updates(silent=True))
         self.protocol("WM_DELETE_WINDOW", self.on_close)
         # tkinter 默认把回调异常打到 stderr，pythonw 下等于丢进黑洞
         self.report_callback_exception = self._on_tk_error
@@ -1331,13 +1444,18 @@ class App(tk.Tk):
         ttk.Button(bar, text="MCP 配置", style="Ghost.TButton", command=self.show_mcp_config).pack(side="left", padx=(2, 0))
 
         more = ttk.Menubutton(bar, text="更多 ▾", style="Ghost.TButton")
+        self.more_btn = more
         menu = tk.Menu(more, tearoff=0)
+        self.more_menu = menu
         menu.add_command(label="打开 servers.yaml", command=self.on_open_config)
         menu.add_command(label="打开凭据目录", command=self.on_open_creds)
         menu.add_command(label="打开桌面端日志", command=self.on_open_log)
         menu.add_command(label="打开服务日志", command=self.on_open_service_log)
         menu.add_separator()
         menu.add_command(label="复制当前配置路径", command=self.on_copy_config_path)
+        menu.add_separator()
+        menu.add_command(label="检查更新…", command=self.show_update_dialog)
+        self.update_menu_index = menu.index("end")  # 有新版本时改这一项的文案
         menu.add_separator()
         menu.add_command(label=f"关于 ssh-mcp  v{__version__}", command=self.show_about)
         more["menu"] = menu
@@ -1799,6 +1917,187 @@ class App(tk.Tk):
         dlg = AboutDialog(self)
         self.wait_window(dlg)
 
+    # ------------------------------------------------------------- 检查更新
+    AUTO_CHECK_INTERVAL = 6 * 3600  # 静默自检的间隔，避免刷 GitHub API 限额
+
+    def check_updates(self, silent: bool = True) -> None:
+        if self._checking_update:
+            return
+        if silent and time.time() - self._last_update_check < self.AUTO_CHECK_INTERVAL:
+            return
+        self._checking_update = True
+        self._last_update_check = time.time()
+        self._save_ui_state()
+        if not silent:
+            self._term("# 正在检查更新 …", "dim")
+
+        def work() -> None:
+            try:
+                res = updater.check(__version__)
+            except Exception as exc:  # noqa: BLE001 - 兜底，绝不让后台线程炸掉
+                res = {"ok": False, "current": __version__, "error": f"{type(exc).__name__}: {exc}"}
+            try:
+                self.after(0, lambda: self._update_checked(res, silent))
+            except Exception:  # noqa: BLE001 - 窗口已经关了
+                pass
+
+        threading.Thread(target=work, daemon=True, name="ssh-mcp-update").start()
+
+    def _update_checked(self, res: dict, silent: bool) -> None:
+        self._checking_update = False
+        if not res.get("ok"):
+            self._term(f"# 检查更新失败：{res.get('error')}", "dim")
+            if not silent:
+                messagebox.showwarning(
+                    "检查更新失败",
+                    f"{res.get('error')}\n\n可以打开发布页手动查看：\n{updater.RELEASES_PAGE}",
+                    parent=self,
+                )
+            return
+
+        self._update_result = res
+        if res.get("has_update"):
+            info = res["info"]
+            self._set_update_badge(True, info)
+            self._term(f"# 发现新版本 {info['version']}（当前 {res['current']}）→ {info['url']}", "cmd")
+            self._open_update_dialog(res)
+        else:
+            self._set_update_badge(False, None)
+            self._term(f"# 已是最新版本 {res['current']}", "dim")
+            if not silent:
+                messagebox.showinfo("检查更新", f"已是最新版本（{res['current']}）", parent=self)
+
+    def _set_update_badge(self, has_update: bool, info: dict | None) -> None:
+        if has_update and info:
+            self.more_btn.configure(text=f"更多 ▾  ⬆{info['version']}")
+            self.more_menu.entryconfigure(
+                self.update_menu_index, label=f"有新版本 {info['version']}，查看"
+            )
+        else:
+            self.more_btn.configure(text="更多 ▾")
+            self.more_menu.entryconfigure(self.update_menu_index, label="检查更新…")
+
+    def _open_update_dialog(self, res: dict) -> None:
+        """同一时间只留一个更新对话框（自动检查和手动检查可能撞车）。"""
+        existing = getattr(self, "_update_dialog", None)
+        if existing is not None:
+            try:
+                if existing.winfo_exists():
+                    existing.lift()
+                    existing.focus_set()
+                    return
+            except tk.TclError:
+                pass
+        dlg = UpdateDialog(self, res)
+        self._update_dialog = dlg
+        self.wait_window(dlg)
+        self._update_dialog = None
+
+    def show_update_dialog(self) -> None:
+        if self._update_result and self._update_result.get("ok"):
+            res = self._update_result
+            if res.get("has_update"):
+                self._open_update_dialog(res)
+                return
+            messagebox.showinfo("检查更新", f"已是最新版本（{res['current']}）", parent=self)
+            return
+        self.check_updates(silent=False)
+
+    def begin_update(self, info: dict, on_finish: Callable[[bool], None] | None = None) -> None:
+        """后台下载 wheel + pip 升级，完成后提示重启。"""
+        if updater.is_editable_install():
+            messagebox.showinfo(
+                "当前是源码安装",
+                "这个环境是 `pip install -e .` 装的，别用 wheel 覆盖。\n"
+                "更新方式：git pull 后在 .venv 里重新 pip install -e .",
+                parent=self,
+            )
+            if on_finish:
+                on_finish(False)
+            return
+
+        self._term(f"# 开始下载 {info.get('wheel_name') or 'wheel'} …", "dim")
+
+        def work() -> None:
+            ok = False
+            try:
+                release = updater.ReleaseInfo(
+                    tag=f"v{info['version']}",
+                    version=info["version"],
+                    url=info.get("url", ""),
+                    wheel_name=info.get("wheel_name"),
+                    wheel_url=info.get("wheel_url") or self._wheel_url_from(info),
+                    wheel_size=int(info.get("wheel_size") or 0),
+                )
+                if not release.wheel_url:
+                    raise ValueError("拿不到 wheel 下载地址")
+                wheel = updater.download_wheel(
+                    release,
+                    progress=lambda done, total: self._update_progress(done, total),
+                )
+                self._term(f"# 已下载 {wheel.name}（{wheel.stat().st_size} 字节），开始安装", "dim")
+                res = updater.install_wheel(wheel)
+                ok = bool(res.get("ok"))
+                tail = (res.get("output") or res.get("error") or "").strip().splitlines()[-6:]
+                for line in tail:
+                    self._term("  " + line, "dim" if ok else "err")
+            except Exception as exc:  # noqa: BLE001
+                self._term(f"[更新失败] {type(exc).__name__}: {exc}", "err")
+            self.after(0, lambda: self._update_finished(ok, info, on_finish))
+
+        threading.Thread(target=work, daemon=True, name="ssh-mcp-upgrade").start()
+
+    @staticmethod
+    def _wheel_url_from(info: dict) -> str | None:
+        name = info.get("wheel_name")
+        if not name:
+            return None
+        return f"{__github__}/releases/download/v{info['version']}/{name}"
+
+    def _update_progress(self, done: int, total: int) -> None:
+        if total <= 0:
+            return
+        pct = int(done * 100 / total)
+        step = 25
+        if pct // step != self._last_pct // step:  # 每 25% 打一行，别刷屏
+            self._last_pct = pct
+            self._term(f"# 下载进度 {pct}%（{done}/{total} 字节）", "dim")
+
+    def _update_finished(self, ok: bool, info: dict, on_finish: Callable[[bool], None] | None) -> None:
+        if on_finish:
+            on_finish(ok)
+        if not ok:
+            messagebox.showerror(
+                "更新失败",
+                f"安装 {info.get('version')} 没成功，详情见下方终端面板。\n"
+                f"也可以从发布页手动下载：\n{info.get('url')}",
+                parent=self,
+            )
+            return
+        self._term(f"# 已安装 {info.get('version')}，重启后生效", "cmd")
+        if messagebox.askyesno(
+            "更新完成",
+            f"{info.get('version')} 已经装好，重启程序后生效。\n\n现在重启吗？",
+            parent=self,
+        ):
+            self.restart_app()
+
+    def restart_app(self) -> None:
+        exe = Path(sys.executable)
+        python = exe.with_name("python.exe") if exe.name.lower() == "pythonw.exe" else exe
+        try:
+            subprocess.Popen(
+                [str(python), "-m", "ssh_mcp.desktop", "--config", str(self.cfg_path)],
+                cwd=str(Path.cwd()),
+                creationflags=(subprocess.CREATE_NO_WINDOW | subprocess.CREATE_NEW_PROCESS_GROUP)
+                if os.name == "nt"
+                else 0,
+            )
+        except Exception as exc:  # noqa: BLE001
+            self.show_error(exc)
+            return
+        self.after(200, self.on_close)
+
     def _load_ui_state(self) -> None:
         """记住端口与 token，省得每次开窗口重填。"""
         loaded = False
@@ -1812,6 +2111,11 @@ class App(tk.Tk):
                 self.var_port.set(str(data["port"]))
             if data.get("token"):
                 self.var_token.set(str(data["token"]))
+            if data.get("last_update_check"):
+                try:
+                    self._last_update_check = float(data["last_update_check"])
+                except (TypeError, ValueError):
+                    pass
         if not loaded:
             # 沿用命令行 / start-http.ps1 生成过的 token
             token_file = Path.home() / ".ssh-mcp" / "token"
@@ -1824,7 +2128,11 @@ class App(tk.Tk):
     def _save_ui_state(self) -> None:
         try:
             UI_STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
-            payload = {"port": self.var_port.get().strip(), "token": self.var_token.get().strip()}
+            payload = {
+                "port": self.var_port.get().strip(),
+                "token": self.var_token.get().strip(),
+                "last_update_check": self._last_update_check,
+            }
             UI_STATE_PATH.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
             try:
                 os.chmod(UI_STATE_PATH, 0o600)
