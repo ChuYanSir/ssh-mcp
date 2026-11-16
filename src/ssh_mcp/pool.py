@@ -529,17 +529,66 @@ class SSHPool:
         return results
 
     # ------------------------------------------------------------------ sftp
-    def _sftp_op(self, conn: _Chan, fn: Callable[[paramiko.SFTPClient], Any]) -> Any:
+    def _sftp_op(
+        self,
+        conn: _Chan,
+        fn: Callable[[paramiko.SFTPClient], Any],
+        *,
+        timeout: float | None = None,
+    ) -> Any:
+        """跑一个 SFTP 操作。
+
+        关键：给 sftp 背后的 channel 设超时。paramiko 默认 timeout=None，
+        连接被对端掐断后 recv 会**永久阻塞**——之前一次上传就是这么把整个
+        MCP 服务卡死的（后续所有工具调用都排在它后面）。
+        """
         sftp = conn.client.open_sftp()
+        if timeout:
+            try:
+                sftp.get_channel().settimeout(timeout)
+            except Exception:  # noqa: BLE001 - 拿不到 channel 就算了，靠上层兜底
+                pass
         try:
             return fn(sftp)
+        except TimeoutError as exc:  # socket.timeout 是 TimeoutError 的子类
+            raise SSHExecError(f"传输超时（{timeout:g}s 无数据），连接可能已断开") from exc
+        except OSError as exc:
+            if "timed out" in str(exc).lower():
+                raise SSHExecError(f"传输超时（{timeout:g}s 无数据），连接可能已断开") from exc
+            raise
         finally:
             try:
                 sftp.close()
             except Exception:  # noqa: BLE001
                 pass
 
-    async def upload(self, alias: str, local_path: str, remote_path: str) -> dict[str, Any]:
+    def _transfer_timeout(self, host: Host, timeout: float | None) -> float:
+        policy_cap = self.cfg.policy.max_transfer_timeout
+        want = timeout if timeout is not None else host.command_timeout * 2
+        return max(5.0, min(float(want), float(policy_cap)))
+
+    async def _sftp_call(
+        self,
+        alias: str,
+        fn: Callable[[paramiko.SFTPClient], Any],
+        *,
+        timeout: float | None,
+    ) -> Any:
+        """带超时的 SFTP 调用；超时/断链后把这条连接丢弃，下次自动重连。"""
+        host = self.cfg.get(alias)
+        eff = self._transfer_timeout(host, timeout)
+        conn = await self.get_conn(alias)
+        try:
+            with self._sftp_lock(alias):
+                return await anyio.to_thread.run_sync(lambda: self._sftp_op(conn, fn, timeout=eff))
+        except BaseException:
+            # 传输失败后这条 transport 大概率已经废了，别让后续调用继续踩
+            await self.close(alias)
+            raise
+
+    async def upload(
+        self, alias: str, local_path: str, remote_path: str, *, timeout: float | None = None
+    ) -> dict[str, Any]:
         host = self.cfg.get(alias)
         if not self.cfg.policy.allow_upload:
             raise PermissionError("policy.allow_upload=false，禁止上传")
@@ -555,9 +604,7 @@ class SSHPool:
             st = sftp.stat(remote_path)
             return {"remote_size": st.st_size}
 
-        conn = await self.get_conn(alias)
-        with self._sftp_lock(alias):
-            info = await anyio.to_thread.run_sync(lambda: self._sftp_op(conn, op))
+        info = await self._sftp_call(alias, op, timeout=timeout)
         return {
             "alias": alias,
             "local_path": str(lp),
@@ -568,7 +615,9 @@ class SSHPool:
             "ok": info["remote_size"] == size,
         }
 
-    async def download(self, alias: str, remote_path: str, local_path: str) -> dict[str, Any]:
+    async def download(
+        self, alias: str, remote_path: str, local_path: str, *, timeout: float | None = None
+    ) -> dict[str, Any]:
         self.cfg.get(alias)
         if not self.cfg.policy.allow_download:
             raise PermissionError("policy.allow_download=false，禁止下载")
@@ -579,9 +628,7 @@ class SSHPool:
             sftp.get(remote_path, str(dest))
             return sftp.stat(remote_path).st_size
 
-        conn = await self.get_conn(alias)
-        with self._sftp_lock(alias):
-            remote_size = await anyio.to_thread.run_sync(lambda: self._sftp_op(conn, op))
+        remote_size = await self._sftp_call(alias, op, timeout=timeout)
         data = dest.read_bytes()
         return {
             "alias": alias,
@@ -593,7 +640,15 @@ class SSHPool:
             "ok": len(data) == remote_size,
         }
 
-    async def write_remote_file(self, alias: str, remote_path: str, content: str, mode: str | None = None) -> dict[str, Any]:
+    async def write_remote_file(
+        self,
+        alias: str,
+        remote_path: str,
+        content: str,
+        mode: str | None = None,
+        *,
+        timeout: float | None = None,
+    ) -> dict[str, Any]:
         self.cfg.get(alias)
         if not self.cfg.policy.allow_write_file:
             raise PermissionError("policy.allow_write_file=false，禁止写远端文件")
@@ -607,9 +662,7 @@ class SSHPool:
                 sftp.chmod(remote_path, int(mode, 8))
             return sftp.stat(remote_path).st_size
 
-        conn = await self.get_conn(alias)
-        with self._sftp_lock(alias):
-            size = await anyio.to_thread.run_sync(lambda: self._sftp_op(conn, op))
+        size = await self._sftp_call(alias, op, timeout=timeout)
         return {
             "alias": alias,
             "remote_path": remote_path,
@@ -618,7 +671,9 @@ class SSHPool:
             "mode": mode,
         }
 
-    async def read_remote_file(self, alias: str, remote_path: str, max_bytes: int = 262144) -> dict[str, Any]:
+    async def read_remote_file(
+        self, alias: str, remote_path: str, max_bytes: int = 262144, *, timeout: float | None = None
+    ) -> dict[str, Any]:
         self.cfg.get(alias)
 
         def op(sftp: paramiko.SFTPClient) -> tuple[bytes, int]:
@@ -626,9 +681,7 @@ class SSHPool:
             with sftp.open(remote_path, "rb") as fh:
                 return fh.read(max_bytes), st.st_size
 
-        conn = await self.get_conn(alias)
-        with self._sftp_lock(alias):
-            data, size = await anyio.to_thread.run_sync(lambda: self._sftp_op(conn, op))
+        data, size = await self._sftp_call(alias, op, timeout=timeout)
         return {
             "alias": alias,
             "remote_path": remote_path,

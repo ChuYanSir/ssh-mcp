@@ -209,6 +209,8 @@ class Policy:
     allow_upload: bool = True
     allow_download: bool = True
     allow_write_file: bool = True
+    # 单次文件传输的空闲超时上限（秒）：多久没数据就认定连接废了
+    max_transfer_timeout: float = 600.0
     # 交互式 shell / PTY
     allow_shell: bool = True
     shell_idle_timeout: float = 900.0  # 无操作多久自动关闭会话（秒）
@@ -254,6 +256,7 @@ class Policy:
             "allow_upload": self.allow_upload,
             "allow_download": self.allow_download,
             "allow_write_file": self.allow_write_file,
+            "max_transfer_timeout": self.max_transfer_timeout,
             "allow_shell": self.allow_shell,
             "shell_idle_timeout": self.shell_idle_timeout,
             "max_shell_sessions": self.max_shell_sessions,

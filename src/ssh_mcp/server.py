@@ -276,11 +276,12 @@ async def ssh_upload(
     alias: Annotated[str, Field(description="目标主机别名")],
     local_path: Annotated[str, Field(description="本机（MCP 服务所在机器）文件绝对路径")],
     remote_path: Annotated[str, Field(description="远端目标绝对路径，父目录会自动创建")],
+    timeout: Annotated[float | None, Field(description="传输空闲超时秒数，默认取命令超时×2（上限 max_transfer_timeout）")] = None,
 ) -> dict[str, Any]:
     """通过 SFTP 上传本机文件到远端，返回字节数与 sha256。"""
     rt = runtime()
     try:
-        out = await rt.pool.upload(alias, local_path, remote_path)
+        out = await rt.pool.upload(alias, local_path, remote_path, timeout=timeout)
         _audit("upload", alias=alias, local_path=local_path, remote_path=remote_path, ok=out["ok"])
         return out
     except Exception as exc:  # noqa: BLE001
@@ -293,11 +294,12 @@ async def ssh_download(
     alias: Annotated[str, Field(description="目标主机别名")],
     remote_path: Annotated[str, Field(description="远端文件绝对路径")],
     local_path: Annotated[str, Field(description="保存到 MCP 服务所在机器的路径，父目录自动创建")],
+    timeout: Annotated[float | None, Field(description="传输空闲超时秒数，默认取命令超时×2")] = None,
 ) -> dict[str, Any]:
     """通过 SFTP 从远端下载文件到本机。"""
     rt = runtime()
     try:
-        out = await rt.pool.download(alias, remote_path, local_path)
+        out = await rt.pool.download(alias, remote_path, local_path, timeout=timeout)
         _audit("download", alias=alias, remote_path=remote_path, local_path=local_path, ok=out["ok"])
         return out
     except Exception as exc:  # noqa: BLE001
@@ -311,11 +313,12 @@ async def ssh_write_file(
     remote_path: Annotated[str, Field(description="远端文件绝对路径")],
     content: Annotated[str, Field(description="文件内容（UTF-8 文本）")],
     mode: Annotated[str | None, Field(description="八进制权限，例如 644 / 755")] = None,
+    timeout: Annotated[float | None, Field(description="传输空闲超时秒数")] = None,
 ) -> dict[str, Any]:
     """直接把文本内容写到远端文件（适合小配置文件，避免本机中转）。"""
     rt = runtime()
     try:
-        out = await rt.pool.write_remote_file(alias, remote_path, content, mode)
+        out = await rt.pool.write_remote_file(alias, remote_path, content, mode, timeout=timeout)
         _audit("write_file", alias=alias, remote_path=remote_path, bytes=out["bytes_written"])
         return out
     except Exception as exc:  # noqa: BLE001
@@ -328,11 +331,12 @@ async def ssh_read_file(
     alias: Annotated[str, Field(description="目标主机别名")],
     remote_path: Annotated[str, Field(description="远端文件绝对路径")],
     max_bytes: Annotated[int, Field(description="最多读取字节数，默认 256KB")] = 262144,
+    timeout: Annotated[float | None, Field(description="传输空闲超时秒数")] = None,
 ) -> dict[str, Any]:
     """读取远端文本文件内容（超过 max_bytes 会截断并标记 truncated）。"""
     rt = runtime()
     try:
-        out = await rt.pool.read_remote_file(alias, remote_path, max_bytes)
+        out = await rt.pool.read_remote_file(alias, remote_path, max_bytes, timeout=timeout)
         _audit("read_file", alias=alias, remote_path=remote_path, size=out["size"])
         return out
     except Exception as exc:  # noqa: BLE001

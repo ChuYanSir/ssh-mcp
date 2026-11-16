@@ -1,10 +1,10 @@
-﻿# ssh-mcp
+# ssh-mcp
 
 把 SSH 凭据收进一个中间服务：客户端会话只拿 `alias` 就能执行命令，**永远看不到用户名、密码、私钥**。
 配了一个原生桌面端（tkinter，无浏览器、无 Electron），增删主机就是在窗口里填表。
 
 > **作者**：[初颜Sir](https://github.com/ChuYanSir) · chuyansir@163.com
-> **仓库**：<https://github.com/ChuYanSir/ssh-mcp> · **版本**：v1.2.0
+> **仓库**：<https://github.com/ChuYanSir/ssh-mcp> · **版本**：v1.2.1
 
 [![ci](https://github.com/ChuYanSir/ssh-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/ChuYanSir/ssh-mcp/actions/workflows/ci.yml)
 [![release](https://github.com/ChuYanSir/ssh-mcp/actions/workflows/release.yml/badge.svg)](https://github.com/ChuYanSir/ssh-mcp/actions/workflows/release.yml)
@@ -270,8 +270,8 @@ proxy_jump: bastion                     # 经另一台已配置的 alias 进内�
 | `ssh_exec` | **核心**：`alias` + `command`，支持 `cwd` / `timeout` / `sudo` / 输出上限 |
 | `ssh_exec_batch` | 多机并发跑同一条命令 |
 | `ssh_check` | 握手探测 + 返回 `uname` / `id` / `date` |
-| `ssh_upload` / `ssh_download` | SFTP 双向传文件，返回 sha256 校验 |
-| `ssh_write_file` / `ssh_read_file` | 直接读写远端文本文件 |
+| `ssh_upload` / `ssh_download` | SFTP 双向传文件，返回 sha256 校验；`timeout` 控制空闲超时 |
+| `ssh_write_file` / `ssh_read_file` | 直接读写远端文本文件；同样支持 `timeout` |
 | `ssh_status` | 连接池状态 + 生效策略 + 配置来源 + 自动热加载统计（`autoload`）+ 活动会话（`shells`） |
 | `ssh_close` | 主动断开连接（下次调用自动重连） |
 | `ssh_reload_config` | 强制重载 `servers.yaml` 并重连（配置变化平时会自动生效，这个用于立刻生效） |
@@ -362,6 +362,11 @@ ssh_shell_close { "session_id": "abc123" }
 - **`sudo: a password is required`**：在桌面端「认证与 sudo」页填密码，或目标机配 `NOPASSWD`。
 - **输出被截断**：返回 `truncated: true`，调大上限或把命令重定向到文件后用 `ssh_read_file` 分段读。
 - **长时间任务**：exec 超时不会杀远端进程，建议 `nohup cmd > log 2>&1 &` 后轮询日志。
+- **上传/下载卡住不动**：1.2.0 之前 `sftp.put/get` 没有超时，连接一被掐断就会**永久阻塞**，
+  而且会把整个 MCP 服务卡住（后续所有工具调用都超时）。1.2.1 起每次传输都会给 SFTP
+  channel 设空闲超时（默认 `command_timeout × 2`，上限 `policy.max_transfer_timeout`），
+  超时后返回 `传输超时（Ns 无数据），连接可能已断开`，并把这条连接丢掉让下次重连。
+  遇到老版本卡死只能重启服务进程。
 - **改了配置不生效**：正常情况下会自动热加载（`ssh_status().autoload.reload_count` 能看到次数）；
   想看立刻生效就调 `ssh_reload_config`。stdio 模式下客户端各起一个进程，重启客户端即可。
 - **桌面端保存后 yaml 注释没了**：`safe_dump` 不保留注释，原文件在 `servers.yaml.bak`；

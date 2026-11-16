@@ -35,6 +35,8 @@ policy:
   allow_upload: true
   allow_download: true
   allow_write_file: true
+  # 文件传输的空闲超时上限（秒）：多久没数据就认定连接已断，避免永久阻塞
+  max_transfer_timeout: 600
   # 交互式 shell / PTY（top、vi、less、tail -f 这类需要终端的程序）
   allow_shell: true
   shell_idle_timeout: 900        # 会话无操作多久自动关闭（秒）
