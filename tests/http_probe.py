@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import socket
 import sys
 import tempfile
@@ -45,7 +46,8 @@ name: ssh-mcp-http-probe
 defaults:
   host_key_policy: ignore
   keepalive: 0
-  shell_kind: cmd
+  shell_kind: {("cmd" if os.name == "nt" else "posix")}
+  posix_shell: {("bash" if os.name == "nt" else "sh")}
   command_timeout: 30
 audit:
   enabled: true

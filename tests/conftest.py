@@ -19,6 +19,11 @@ from ssh_mcp import server as srv  # noqa: E402
 SSH_USER = "testuser"
 SSH_PASS = "testpass"
 
+# 假 SSH 服务器是在本机用 shell 执行命令的，所以远端 shell 必须跟随测试机的平台：
+# Windows 用 cmd（没有 bash），Linux/macOS 用 posix + sh。
+LOCAL_SHELL_KIND = "cmd" if os.name == "nt" else "posix"
+LOCAL_POSIX_SHELL = "bash" if os.name == "nt" else "sh"
+
 
 @pytest.fixture(scope="module")
 def fake_ssh():
@@ -35,7 +40,8 @@ def cfg_path(tmp_path: Path, fake_ssh: FakeSSHServer) -> Path:
         defaults:
           host_key_policy: ignore
           keepalive: 0
-          shell_kind: cmd
+          shell_kind: {LOCAL_SHELL_KIND}
+          posix_shell: {LOCAL_POSIX_SHELL}
           command_timeout: 30
           max_output_bytes: 200000
         policy:

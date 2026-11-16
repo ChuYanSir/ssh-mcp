@@ -50,7 +50,13 @@ def test_exec_stderr_and_exit_code(rt):
 
 
 def test_exec_truncation(rt):
-    res = anyio.run(lambda: rt.pool.exec("local", "dir", max_output_bytes=64))
+    # 跨平台：两条命令都只用到各自 shell 的内建/常见命令，避免嵌套引号
+    big = (
+        "for /l %i in (1,1,200) do @echo aaaaaaaaaaaaaaaaaaaa"
+        if os.name == "nt"
+        else "seq 1 400"
+    )
+    res = anyio.run(lambda: rt.pool.exec("local", big, max_output_bytes=64))
     assert res.truncated is True
     assert len(res.stdout) <= 64
 

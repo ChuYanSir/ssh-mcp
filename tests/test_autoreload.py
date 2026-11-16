@@ -14,6 +14,13 @@ from fake_ssh_server import FakeSSHServer
 from ssh_mcp import server as srv
 from ssh_mcp.config import load_config
 
+# 假 SSH 服务器在本机执行命令，远端 shell 得跟着测试机平台走
+SHELL_DEFAULTS = (
+    "  shell_kind: cmd\n  posix_shell: bash\n"
+    if os.name == "nt"
+    else "  shell_kind: posix\n  posix_shell: sh\n"
+)
+
 
 def _write(cfg: Path, port: int, extra: str = "") -> None:
     cfg.write_text(
@@ -21,8 +28,7 @@ def _write(cfg: Path, port: int, extra: str = "") -> None:
 defaults:
   host_key_policy: ignore
   keepalive: 0
-  shell_kind: cmd
-  command_timeout: 30
+{SHELL_DEFAULTS}  command_timeout: 30
 audit:
   enabled: true
   path: {(cfg.parent / 'audit.jsonl').as_posix()}
