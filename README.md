@@ -441,6 +441,24 @@ git push origin v1.0.1
 
 ## 10. 检查更新
 
+### 更新一份"源码安装"（`pip install -e .`）
+
+`E:\AI\tools\ssh-mcp` 这种从源码目录 editable 安装的，直接 `pip install --upgrade` 会打架，
+用仓库里的脚本一条命令搞定（会先备份，再清理新版本删掉的文件）：
+
+```powershell
+cd <仓库目录>
+.\scripts\update-local.ps1 -Target E:\AI\tools\ssh-mcp -Check   # 只看有没有更新
+.\scripts\update-local.ps1 -Target E:\AI\tools\ssh-mcp          # 执行更新（含跑测试）
+```
+
+它按顺序做：比对版本 → 备份（排除 `.venv`）→ `git archive HEAD` 覆盖 → 删掉 HEAD 里已不存在的文件
+→ `pip install -e . --no-deps` → 校验 `servers.yaml` 未被改动 → 跑测试。
+
+> 更新完记得**重启客户端**：常驻的 stdio 服务进程还跑着旧代码，磁盘换了它不会自动换。
+
+### 桌面端检查更新
+
 桌面端会通过 GitHub Releases 检查有没有新版本，不需要你去仓库看。
 
 ![检查更新](docs/ui-update.png)
