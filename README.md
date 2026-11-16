@@ -6,6 +6,10 @@
 > **作者**：[初颜Sir](https://github.com/ChuYanSir) · chuyansir@163.com
 > **仓库**：<https://github.com/ChuYanSir/ssh-mcp> · **版本**：v1.0.0
 
+[![ci](https://github.com/ChuYanSir/ssh-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/ChuYanSir/ssh-mcp/actions/workflows/ci.yml)
+[![release](https://github.com/ChuYanSir/ssh-mcp/actions/workflows/release.yml/badge.svg)](https://github.com/ChuYanSir/ssh-mcp/actions/workflows/release.yml)
+[![latest release](https://img.shields.io/github/v/release/ChuYanSir/ssh-mcp?color=2f6feb)](https://github.com/ChuYanSir/ssh-mcp/releases)
+
 桌面端「更多 → 关于 ssh-mcp」和状态栏右下角都带有作者与仓库地址：
 
 ![关于](docs/ui-about.png)
@@ -326,6 +330,34 @@ $env:PYTHONIOENCODING='utf-8'
 ```
 
 测试用 `tests/fake_ssh_server.py` 起本地回环 SSH 服务（密码认证 + exec + SFTP），不碰任何真实主机。
+
+### CI 与发布（GitHub Actions）
+
+| 工作流 | 触发 | 做什么 |
+|---|---|---|
+| [`ci.yml`](.github/workflows/ci.yml) | push 到 `main` / PR / 手动 | Windows + Ubuntu × Python 3.10/3.12/3.13 跑 `pytest`；Windows 上额外跑 HTTP 传输探针；最后构建 sdist+wheel，装一遍验证入口 `ssh-mcp --help`，产物作为 artifact |
+| [`release.yml`](.github/workflows/release.yml) | 推 `v*` tag / 手动填 tag | 先在 Windows 上跑测试当门槛 → 校验 tag 与 `__version__` 一致 → 构建 → 自动创建 GitHub Release 并附上 `*.whl` / `*.tar.gz` |
+
+发一个新版本就三步：
+
+```powershell
+# 1. 改版本号（CI 会拿 tag 和它比对，不一致直接失败）
+#    src/ssh_mcp/__init__.py  ->  __version__ = "1.0.1"
+
+# 2. 提交
+git commit -am "chore: release v1.0.1"
+git push origin main
+
+# 3. 打 tag 并推送，工作流自动发布
+git tag v1.0.1
+git push origin v1.0.1
+```
+
+发布页：<https://github.com/ChuYanSir/ssh-mcp/releases>
+
+> Release 正文由工作流生成的 `notes.md` 提供（安装命令、两个入口、产物清单）。
+> 重跑同一个 tag 不会报错：工作流检测到 release 已存在时改用
+> `gh release upload --clobber` 覆盖资产。
 
 ---
 

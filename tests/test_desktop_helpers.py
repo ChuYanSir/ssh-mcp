@@ -12,7 +12,9 @@ from pathlib import Path
 
 import pytest
 
-from ssh_mcp import desktop
+pytest.importorskip("tkinter", reason="桌面端需要 tkinter；CI 的 Linux 镜像可能没装")
+
+from ssh_mcp import desktop  # noqa: E402
 
 
 def test_ensure_stdio_restores_missing_streams(monkeypatch, tmp_path: Path):

@@ -1,0 +1,124 @@
+name: release
+
+# 打 tag 即发布：git tag v1.0.1 && git push origin v1.0.1
+# 也可以在 Actions 页面手动填 tag 重跑（用于补发或修复发布）。
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "要发布的 tag（须已存在，例如 v1.0.1）"
+        required: true
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  TAG: ${{ inputs.tag || github.ref_name }}
+
+jobs:
+  test:
+    name: gate · tests before release
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev]"
+
+      - name: Tests
+        env:
+          PYTHONIOENCODING: utf-8
+          PYTHONUTF8: "1"
+        run: python -m pytest tests -q
+
+  build:
+    name: build + publish GitHub Release
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # tag 与 __init__.py 里的版本必须一致，避免发出去的包和 release 对不上
+      - name: Check tag matches __version__
+        run: |
+          python - <<'PY'
+          import os, re, pathlib, sys
+
+          tag = os.environ["TAG"].lstrip("v")
+          src = pathlib.Path("src/ssh_mcp/__init__.py").read_text(encoding="utf-8")
+          m = re.search(r'__version__\s*=\s*"([^"]+)"', src)
+          if not m:
+              sys.exit("src/ssh_mcp/__init__.py 里找不到 __version__")
+          if m.group(1) != tag:
+              sys.exit(f"tag {tag!r} 与 __version__ {m.group(1)!r} 不一致，先改版本号再打 tag")
+          print(f"version ok: {tag}")
+          PY
+
+      - name: Build sdist + wheel
+        run: |
+          python -m pip install --upgrade pip build
+          python -m build
+          ls -l dist
+
+      - name: Verify artifacts
+        run: |
+          python -m pip install dist/*.whl
+          ssh-mcp --help > /dev/null
+          python -c "import ssh_mcp, ssh_mcp.desktop, ssh_mcp.pool; print('import ok', ssh_mcp.__version__)"
+
+      - name: Write release notes header
+        run: |
+          cat > notes.md <<'MD'
+          ## 安装
+
+          ```powershell
+          pip install ssh-mcp
+          # 或从下面的 wheel 直接装
+          pip install ssh_mcp-<version>-py3-none-any.whl
+          ```
+
+          桌面端：`ssh-mcp-desktop`（或双击 `scripts/start-desktop.cmd`）。
+          MCP 服务：`ssh-mcp --transport stdio` / `ssh-mcp --transport http --port 8765 --token <token>`。
+
+          MD
+          echo "" >> notes.md
+          echo "---" >> notes.md
+          echo "" >> notes.md
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "release $TAG 已存在，改为上传/覆盖资产"
+            gh release upload "$TAG" dist/* --clobber
+          else
+            gh release create "$TAG" dist/* \
+              --title "ssh-mcp $TAG" \
+              --notes-file notes.md
+          fi
+          gh release view "$TAG" --json url,assets --jq '"release: " + .url'

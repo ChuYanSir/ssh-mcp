@@ -10,3 +10,4 @@ servers.yaml.bak
 .env
 *.log
 .pytest_cache/
+notes.md
