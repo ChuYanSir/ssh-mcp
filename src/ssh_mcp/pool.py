@@ -326,9 +326,36 @@ class SSHPool:
         if transport is None or not transport.is_active():
             raise SSHExecError(f"{conn.host.alias} 的连接已断开")
         chan = transport.open_session(timeout=min(timeout, 30.0))
-        chan.settimeout(None)
+        # 留一个有限的超时：连接半死不活时 exec_command 里的 _wait_for_event 才能抛出来，
+        # 否则它会一直等服务器回应（见下面的 _safe_exit_status）
+        chan.settimeout(min(timeout, 60.0))
         chan.exec_command(command)
         return chan
+
+    @staticmethod
+    def _safe_exit_status(chan: paramiko.Channel, wait: float) -> int | None:
+        """取退出码，但**绝不超过 wait 秒**。
+
+        paramiko 的 recv_exit_status() 内部是 `self.status_event.wait()`，
+        没有任何超时；连接在执行途中断掉时它永远等不到 exit-status，会把线程
+        永久挂住（这正是 05:50 之后整个服务卡死的直接原因）。
+        所以只在「状态已就绪」时调它，否则关掉 channel 返回 None。
+        """
+        deadline = time.monotonic() + max(0.0, wait)
+        while time.monotonic() < deadline:
+            if chan.exit_status_ready() or chan.closed:
+                break
+            time.sleep(0.01)
+        if chan.exit_status_ready():
+            try:
+                return chan.recv_exit_status()
+            except Exception:  # noqa: BLE001
+                return None
+        try:
+            chan.close()
+        except Exception:  # noqa: BLE001
+            pass
+        return None
 
     @staticmethod
     def _drain(chan: paramiko.Channel, deadline: float, max_bytes: int) -> tuple[bytes, bytes, bool, bool]:
@@ -364,6 +391,10 @@ class SSHPool:
                     truncated = True
             if chan.exit_status_ready() and not chan.recv_ready() and not chan.recv_stderr_ready():
                 break
+            if chan.closed and not chan.recv_ready() and not chan.recv_stderr_ready():
+                # channel 关了：连接断掉，或者命令已经结束但没给 exit-status。
+                # 立刻退出循环，别死等到 deadline（上层据此判断连接是否断掉）。
+                break
             if time.monotonic() > deadline:
                 timed_out = True
                 try:
@@ -392,12 +423,17 @@ class SSHPool:
                 chan.sendall(sudo_password.encode(encoding) + b"\n")
             deadline = time.monotonic() + timeout
             out, err, truncated, timed_out = self._drain(chan, deadline, max_bytes)
-            exit_code = -1
+
+            exit_code: int | None = -1
             if not timed_out:
-                try:
-                    exit_code = chan.recv_exit_status()
-                except Exception:  # noqa: BLE001
-                    exit_code = -1
+                if not chan.exit_status_ready() and chan.closed:
+                    # channel 关了却没有 exit-status：连接是在执行途中断的
+                    raise SSHExecError(f"{conn.host.alias} 的连接在执行命令途中断开")
+                exit_code = self._safe_exit_status(chan, max(1.0, deadline - time.monotonic()))
+                if exit_code is None:
+                    raise SSHExecError(
+                        f"{conn.host.alias} 没有返回退出码（连接可能已断开），命令可能未完成"
+                    )
             return exit_code, out, err, truncated, timed_out
         finally:
             try:
@@ -773,9 +809,10 @@ class SSHPool:
         if transport is None or not transport.is_active():
             raise ShellError(f"{alias} 的连接已断开")
         chan = transport.open_session(timeout=15)
+        # 同样别把 timeout 设成 None：invoke_shell / resize_pty 内部都会等对端回应
+        chan.settimeout(15.0)
         chan.get_pty(term=term, width=cols, height=rows)
         chan.invoke_shell()
-        chan.settimeout(None)
 
         sess = ShellSession(
             sid=uuid.uuid4().hex[:12],

@@ -4,7 +4,7 @@
 配了一个原生桌面端（tkinter，无浏览器、无 Electron），增删主机就是在窗口里填表。
 
 > **作者**：[初颜Sir](https://github.com/ChuYanSir) · chuyansir@163.com
-> **仓库**：<https://github.com/ChuYanSir/ssh-mcp> · **版本**：v1.2.1
+> **仓库**：<https://github.com/ChuYanSir/ssh-mcp> · **版本**：v1.2.2
 
 [![ci](https://github.com/ChuYanSir/ssh-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/ChuYanSir/ssh-mcp/actions/workflows/ci.yml)
 [![release](https://github.com/ChuYanSir/ssh-mcp/actions/workflows/release.yml/badge.svg)](https://github.com/ChuYanSir/ssh-mcp/actions/workflows/release.yml)
@@ -362,6 +362,12 @@ ssh_shell_close { "session_id": "abc123" }
 - **`sudo: a password is required`**：在桌面端「认证与 sudo」页填密码，或目标机配 `NOPASSWD`。
 - **输出被截断**：返回 `truncated: true`，调大上限或把命令重定向到文件后用 `ssh_read_file` 分段读。
 - **长时间任务**：exec 超时不会杀远端进程，建议 `nohup cmd > log 2>&1 &` 后轮询日志。
+- **命令全都没反应、ssh_status 也超时**：1.2.1 及以前，`ssh_exec` 在连接中途断掉时会卡在
+  paramiko 的 `recv_exit_status()` 里（内部是 `status_event.wait()`，**没有超时**），
+  一条命令就能把整个服务线程挂死几小时，后续调用全部排队。
+  1.2.2 起：channel 超时不再设成 `None`、退出码只在「已就绪」时取、channel 关闭立刻判失败，
+  失败后自动重连重试一次。实测卡住的进程特征是**到目标机的 TCP 连接已经为 0 条**，
+  但进程还活着 —— 看到这种情况直接重启服务进程即可。
 - **上传/下载卡住不动**：1.2.0 之前 `sftp.put/get` 没有超时，连接一被掐断就会**永久阻塞**，
   而且会把整个 MCP 服务卡住（后续所有工具调用都超时）。1.2.1 起每次传输都会给 SFTP
   channel 设空闲超时（默认 `command_timeout × 2`，上限 `policy.max_transfer_timeout`），
