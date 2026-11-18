@@ -1,10 +1,10 @@
-# ssh-mcp
+﻿# ssh-mcp
 
 把 SSH 凭据收进一个中间服务：客户端会话只拿 `alias` 就能执行命令，**永远看不到用户名、密码、私钥**。
 配了一个原生桌面端（tkinter，无浏览器、无 Electron），增删主机就是在窗口里填表。
 
 > **作者**：[初颜Sir](https://github.com/ChuYanSir) · chuyansir@163.com
-> **仓库**：<https://github.com/ChuYanSir/ssh-mcp> · **版本**：v1.2.2
+> **仓库**：<https://github.com/ChuYanSir/ssh-mcp> · **版本**：v1.3.0
 
 [![ci](https://github.com/ChuYanSir/ssh-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/ChuYanSir/ssh-mcp/actions/workflows/ci.yml)
 [![release](https://github.com/ChuYanSir/ssh-mcp/actions/workflows/release.yml/badge.svg)](https://github.com/ChuYanSir/ssh-mcp/actions/workflows/release.yml)
@@ -345,7 +345,37 @@ ssh_shell_close { "session_id": "abc123" }
 
 ---
 
-## 8. 常见问题
+## 8. 连接自愈
+
+长连接放久了会变成「半开」——本端认为还活着，对端其实早断了。以前踩上去就是一条命令卡死
+（见上一版 `recv_exit_status` 的问题），现在两层机制兜住：
+
+| 机制 | 触发点 | 行为 |
+|---|---|---|
+| **使用前探活** | `get_conn()`：连接空闲 ≥ `idle_probe_after`（默认 240s） | 开一个 channel 跑 `true`，拿到 exit-status 就继续用；拿不到就丢掉这条连接、重新建一条，然后把命令发过去 |
+| **后台巡检** | 每 `heal_interval`（默认 120s）扫一遍池子 | 同样探活所有空闲连接，死的直接摘掉并写 `~/.ssh-mcp/logs/heal.log` |
+
+几个要点：
+
+- 只在**空闲**且**没有操作在跑**（`inflight == 0`）且**没有活跃交互会话**时才动手，
+  不会把正在执行的命令或别人的终端踢掉；
+- 探活超时由 `probe_timeout` 控制（默认 10s），探活本身也有界，不会变成新的卡点；
+- 任意一次 `exec` 遇到连接层面的失败（`RetryableError`）会**自动重连并重试一次**，
+  所以你看到的是「稍慢一下然后成功」，而不是报错；
+- `ssh_status` 里能看到状态：
+
+```json
+"healer": { "enabled": true, "interval_seconds": 120, "idle_probe_after": 240,
+            "probe_timeout": 10, "thread_alive": true },
+"connections": [ { "alias": "测试服务器", "connected": true, "idle_seconds": 12,
+                   "inflight": 0, "probe_failures": 0, "probe_eligible": false } ]
+```
+
+关掉它：`policy.heal_interval: 0`（后台线程）或 `policy.idle_probe_after: 0`（使用前探活）。
+
+---
+
+## 9. 常见问题
 
 - **桌面端打不开**：用 `python -m ssh_mcp.desktop` 前台跑一遍看报错；tkinter 缺失时按
   `docs/` 里记的方式给 Python 补 tcl/tk（本机已补）。
@@ -383,7 +413,7 @@ ssh_shell_close { "session_id": "abc123" }
 
 ---
 
-## 9. 自测
+## 10. 自测
 
 ### 截图规范（重要）
 
@@ -445,7 +475,7 @@ git push origin v1.0.1
 
 ---
 
-## 10. 检查更新
+## 11. 检查更新
 
 ### 更新一份"源码安装"（`pip install -e .`）
 
@@ -492,7 +522,7 @@ ssh-mcp-update --current 1.0.0 # 假装是旧版本，看看会不会提示更�
 
 ---
 
-## 11. 作者与许可
+## 12. 作者与许可
 
 | | |
 |---|---|

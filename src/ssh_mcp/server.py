@@ -53,6 +53,9 @@ class Runtime:
         self._path = Path(self.cfg.source) if self.cfg.source else None
         self._stamp = self._config_stamp()
         self._lock = threading.Lock()
+        if autoload:
+            # 后台巡检：把空闲后失活的连接主动摘掉，避免下一条命令踩上去
+            self.pool.start_healer()
 
     # ----------------------------------------------------------- 变更检测
     def _config_stamp(self) -> tuple[int, int] | None:
@@ -93,12 +96,14 @@ class Runtime:
             self.cfg = new_cfg
             self.audit = AuditLog(new_cfg.audit)
             self.pool = SSHPool(new_cfg)
+            self.pool.start_healer()
             self._path = Path(new_cfg.source) if new_cfg.source else self._path
             self._stamp = self._config_stamp()
             self.reload_count += 1
             self.last_reload_at = time.time()
             self.last_reload_error = None
 
+        old_pool.stop_healer()
         threading.Thread(
             target=self._close_pool_sync,
             args=(old_pool,),
@@ -453,6 +458,7 @@ async def ssh_status() -> dict[str, Any]:
             "last_error": rt.last_reload_error,
         },
         "connections": rt.pool.status(),
+        "healer": rt.pool.heal_status(),
         "shells": rt.pool.shell_list(),
     }
 

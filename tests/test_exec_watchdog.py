@@ -97,6 +97,13 @@ class _FakeConn:
     def __init__(self, chan: _FakeChan, alias: str = "box"):
         self.host = type("H", (), {"alias": alias, "encoding": "utf-8"})()
         self.client = _FakeClient(chan)
+        self.inflight = 0
+
+    def enter(self) -> None:
+        self.inflight += 1
+
+    def leave(self) -> None:
+        self.inflight = max(0, self.inflight - 1)
 
 
 @pytest.fixture()

@@ -44,6 +44,13 @@ class _FakeConn:
     def __init__(self, sftp: _FakeSFTP) -> None:
         self.host = None
         self.client = _FakeClient(sftp)
+        self.inflight = 0
+
+    def enter(self) -> None:
+        self.inflight += 1
+
+    def leave(self) -> None:
+        self.inflight = max(0, self.inflight - 1)
 
 
 @pytest.fixture()

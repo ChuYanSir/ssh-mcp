@@ -41,6 +41,11 @@ policy:
   allow_shell: true
   shell_idle_timeout: 900        # 会话无操作多久自动关闭（秒）
   max_shell_sessions: 8          # 同时最多几个交互会话
+
+  # 连接自愈：空闲连接先探活，探不通就直接换新的，避免踩到已经死掉的半开连接
+  idle_probe_after: 240          # 连接空闲超过多少秒后，使用前先探一次活
+  heal_interval: 120             # 后台巡检间隔（秒），<=0 关闭后台线程
+  probe_timeout: 10              # 单次探活超时（秒）
   # 空 = 允许 hosts 里的全部；填了则只有列出的 alias 可用（多租户时隔离用）
   allowed_hosts: []
   dry_run: false                  # true = 只校验不执行（调试配置用）

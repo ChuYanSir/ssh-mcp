@@ -215,6 +215,10 @@ class Policy:
     allow_shell: bool = True
     shell_idle_timeout: float = 900.0  # 无操作多久自动关闭会话（秒）
     max_shell_sessions: int = 8
+    # 连接自愈：空闲多久先探活一次 / 后台巡检间隔 / 单次探测超时（<=0 关闭）
+    idle_probe_after: float = 240.0
+    heal_interval: float = 120.0
+    probe_timeout: float = 10.0
     allowed_hosts: list[str] = field(default_factory=list)  # 空 = 允许配置里的全部
     dry_run: bool = False
 
@@ -260,6 +264,9 @@ class Policy:
             "allow_shell": self.allow_shell,
             "shell_idle_timeout": self.shell_idle_timeout,
             "max_shell_sessions": self.max_shell_sessions,
+            "idle_probe_after": self.idle_probe_after,
+            "heal_interval": self.heal_interval,
+            "probe_timeout": self.probe_timeout,
             "allowed_hosts": self.allowed_hosts or "all-configured",
             "dry_run": self.dry_run,
         }

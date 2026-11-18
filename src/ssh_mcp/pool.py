@@ -65,6 +65,10 @@ class ShellError(RuntimeError):
     """交互式 shell 会话层面的错误。"""
 
 
+class RetryableError(SSHExecError):
+    """连接层面的失败（断了 / 半开 / 拿不到退出码）：重连一次通常就好了。"""
+
+
 _ANSI_RE = re.compile(
     r"\x1b\[[0-9;?]*[ -/]*[@-~]"      # CSI
     r"|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)"  # OSC
@@ -79,6 +83,17 @@ def strip_ansi(text: str) -> str:
     cleaned = _ANSI_RE.sub("", text)
     cleaned = cleaned.replace("\r\n", "\n").replace("\r", "\n")
     return _CTRL_RE.sub("", cleaned)
+
+
+def _log_heal(message: str) -> None:
+    """自愈动作落一行日志（失败也不影响业务）。"""
+    try:
+        path = Path.home() / ".ssh-mcp" / "logs" / "heal.log"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as fh:
+            fh.write(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {message}\n")
+    except OSError:
+        pass
 
 
 @dataclass
@@ -122,6 +137,23 @@ class _Chan:
     last_used: float = field(default_factory=time.time)
     exec_count: int = 0
     jump_alias: str | None = None
+    # 正在使用这条 transport 的操作数：自愈线程只在 inflight=0 时才敢探测/丢弃
+    inflight: int = 0
+    lock: threading.Lock = field(default_factory=threading.Lock)
+    probed_at: float = 0.0
+    probe_failures: int = 0
+
+    def enter(self) -> None:
+        with self.lock:
+            self.inflight += 1
+
+    def leave(self) -> None:
+        with self.lock:
+            self.inflight = max(0, self.inflight - 1)
+
+    @property
+    def idle_seconds(self) -> float:
+        return max(0.0, time.time() - self.last_used)
 
 
 def _host_key_policy(host: Host) -> paramiko.MissingHostKeyPolicy:
@@ -143,6 +175,8 @@ class SSHPool:
         self._sftp_locks: dict[str, threading.Lock] = {}
         self._shells: dict[str, ShellSession] = {}
         self._guard = threading.Lock()
+        self._healer: threading.Thread | None = None
+        self._healer_stop = threading.Event()
 
     # ---------------------------------------------------------------- helpers
     def _lock(self, alias: str) -> anyio.Lock:
@@ -251,15 +285,120 @@ class SSHPool:
             conn = self._conns.get(alias)
             alive = conn is not None and conn.client.get_transport() is not None and conn.client.get_transport().is_active()
             if conn is not None and alive and not reconnect:
-                conn.last_used = time.time()
-                return conn
+                # 自愈第一层：空闲太久就先探一次，半开连接在真正用之前就换掉
+                if self._should_probe(conn):
+                    ok = await anyio.to_thread.run_sync(lambda: self._probe(conn))
+                    if not ok:
+                        await self._drop_conn(alias, conn)
+                        conn = None
+                if conn is not None:
+                    conn.last_used = time.time()
+                    return conn
             if conn is not None:
-                await anyio.to_thread.run_sync(self._close_sync, conn.client)
-                self._conns.pop(alias, None)
+                await self._drop_conn(alias, conn)
             client, jump_alias = await anyio.to_thread.run_sync(self._connect_sync, host)
             conn = _Chan(client=client, host=host, jump_alias=jump_alias)
             self._conns[alias] = conn
             return conn
+
+    async def _drop_conn(self, alias: str, conn: _Chan) -> None:
+        self._conns.pop(alias, None)
+        await anyio.to_thread.run_sync(self._close_sync, conn.client)
+
+    # ------------------------------------------------------------ 自愈
+    def _should_probe(self, conn: _Chan) -> bool:
+        after = self.cfg.policy.idle_probe_after
+        if after <= 0:
+            return False
+        if conn.inflight > 0:
+            return False
+        # 有活跃交互会话时别动这条 transport，否则会把别人的终端踢掉
+        with self._guard:
+            if any(s.alias == conn.host.alias and not s.closed for s in self._shells.values()):
+                return False
+        return conn.idle_seconds >= after
+
+    def _probe(self, conn: _Chan, timeout: float | None = None) -> bool:
+        """轻量探活：开一个 channel 跑 `true`，拿到 exit-status 就算活着。
+
+        只要拿到退出码（哪怕非 0，比如目标是 Windows）就说明 transport 和 sshd 都在响。
+        任何异常、超时都判为死连接。
+        """
+        limit = float(timeout if timeout is not None else self.cfg.policy.probe_timeout)
+        transport = conn.client.get_transport()
+        if transport is None or not transport.is_active():
+            return False
+        try:
+            chan = transport.open_session(timeout=limit)
+            chan.settimeout(limit)
+            chan.exec_command("true")
+        except Exception:  # noqa: BLE001
+            return False
+        try:
+            started = time.monotonic()
+            while time.monotonic() - started < limit:
+                if chan.exit_status_ready() or chan.closed:
+                    break
+                time.sleep(0.01)
+            alive = chan.exit_status_ready()
+            if not alive and not chan.closed:
+                try:
+                    chan.close()
+                except Exception:  # noqa: BLE001
+                    pass
+            return alive
+        finally:
+            try:
+                chan.close()
+            except Exception:  # noqa: BLE001
+                pass
+
+    def heal_once(self) -> list[str]:
+        """巡检一轮：探活所有空闲连接，把死掉的摘掉。返回被摘掉的 alias。
+
+        线程安全：只动 inflight==0 的连接；探测失败才丢，探测成功只更新 last_used。
+        """
+        dropped: list[str] = []
+        for alias, conn in list(self._conns.items()):
+            if not self._should_probe(conn):
+                continue
+            ok = self._probe(conn)
+            conn.probed_at = time.time()
+            if ok:
+                conn.probe_failures = 0
+                conn.last_used = time.time()  # 探活成功也算活跃，别每轮都探
+            else:
+                conn.probe_failures += 1
+                self._conns.pop(alias, None)
+                self._close_sync(conn.client)
+                dropped.append(alias)
+        return dropped
+
+    def start_healer(self) -> None:
+        """后台巡检线程（daemon）。间隔 <=0 表示关闭。"""
+        interval = float(self.cfg.policy.heal_interval)
+        if interval <= 0 or self._healer is not None:
+            return
+        self._healer_stop.clear()
+        self._healer = threading.Thread(target=self._heal_loop, args=(interval,), daemon=True,
+                                        name="ssh-mcp-healer")
+        self._healer.start()
+
+    def stop_healer(self) -> None:
+        if self._healer is None:
+            return
+        self._healer_stop.set()
+        thread, self._healer = self._healer, None
+        thread.join(timeout=5)
+
+    def _heal_loop(self, interval: float) -> None:
+        while not self._healer_stop.wait(interval):
+            try:
+                dropped = self.heal_once()
+                if dropped:
+                    _log_heal(f"dropped dead connections: {', '.join(dropped)}")
+            except Exception:  # noqa: BLE001 - 巡检线程绝不因为异常退出
+                pass
 
     @staticmethod
     def _close_sync(client: paramiko.SSHClient) -> None:
@@ -316,15 +455,28 @@ class SSHPool:
                     "idle_seconds": int(time.time() - conn.last_used),
                     "uptime_seconds": int(time.time() - conn.created_at),
                     "via_jump": conn.jump_alias,
+                    "inflight": conn.inflight,
+                    "probe_failures": conn.probe_failures,
+                    "probe_eligible": self._should_probe(conn),
                 }
             )
         return rows
+
+    def heal_status(self) -> dict[str, Any]:
+        policy = self.cfg.policy
+        return {
+            "enabled": policy.heal_interval > 0,
+            "interval_seconds": policy.heal_interval,
+            "idle_probe_after": policy.idle_probe_after,
+            "probe_timeout": policy.probe_timeout,
+            "thread_alive": bool(self._healer is not None and self._healer.is_alive()),
+        }
 
     # ------------------------------------------------------------ exec engine
     def _open_chan(self, conn: _Chan, command: str, timeout: float):
         transport = conn.client.get_transport()
         if transport is None or not transport.is_active():
-            raise SSHExecError(f"{conn.host.alias} 的连接已断开")
+            raise RetryableError(f"{conn.host.alias} 的连接已断开")
         chan = transport.open_session(timeout=min(timeout, 30.0))
         # 留一个有限的超时：连接半死不活时 exec_command 里的 _wait_for_event 才能抛出来，
         # 否则它会一直等服务器回应（见下面的 _safe_exit_status）
@@ -428,10 +580,10 @@ class SSHPool:
             if not timed_out:
                 if not chan.exit_status_ready() and chan.closed:
                     # channel 关了却没有 exit-status：连接是在执行途中断的
-                    raise SSHExecError(f"{conn.host.alias} 的连接在执行命令途中断开")
+                    raise RetryableError(f"{conn.host.alias} 的连接在执行命令途中断开")
                 exit_code = self._safe_exit_status(chan, max(1.0, deadline - time.monotonic()))
                 if exit_code is None:
-                    raise SSHExecError(
+                    raise RetryableError(
                         f"{conn.host.alias} 没有返回退出码（连接可能已断开），命令可能未完成"
                     )
             return exit_code, out, err, truncated, timed_out
@@ -487,6 +639,7 @@ class SSHPool:
         async with sem:
             conn = await self.get_conn(alias)
             started = time.perf_counter()
+            conn.enter()
             try:
                 exit_code, out, err, truncated, timed_out = await anyio.to_thread.run_sync(
                     lambda: self._exec_sync(
@@ -498,11 +651,10 @@ class SSHPool:
                         encoding=eff_encoding,
                     )
                 )
-            except SSHExecError:
-                raise
-            except Exception as exc:  # noqa: BLE001 - 连接被对端踢掉时重连一次
+            except RetryableError:
+                # 连接层面的失败：换一条新连接重试一次（inflight 由 finally 统一收）
                 if _attempt >= 1:
-                    raise SSHExecError(f"{alias} 执行失败: {exc}") from exc
+                    raise
                 await self.get_conn(alias, reconnect=True)
                 return await self.exec(
                     alias,
@@ -514,8 +666,22 @@ class SSHPool:
                     encoding=encoding,
                     _attempt=_attempt + 1,
                 )
-
-        conn.exec_count += 1
+            except Exception:  # noqa: BLE001 - 其它异常也重连一次再放弃
+                if _attempt >= 1:
+                    raise
+                await self.get_conn(alias, reconnect=True)
+                return await self.exec(
+                    alias,
+                    command,
+                    cwd=cwd,
+                    timeout=timeout,
+                    max_output_bytes=max_output_bytes,
+                    sudo=sudo,
+                    encoding=encoding,
+                    _attempt=_attempt + 1,
+                )
+            finally:
+                conn.leave()
         conn.last_used = time.time()
         duration_ms = int((time.perf_counter() - started) * 1000)
         return ExecResult(
@@ -614,6 +780,7 @@ class SSHPool:
         host = self.cfg.get(alias)
         eff = self._transfer_timeout(host, timeout)
         conn = await self.get_conn(alias)
+        conn.enter()
         try:
             with self._sftp_lock(alias):
                 return await anyio.to_thread.run_sync(lambda: self._sftp_op(conn, fn, timeout=eff))
@@ -621,6 +788,8 @@ class SSHPool:
             # 传输失败后这条 transport 大概率已经废了，别让后续调用继续踩
             await self.close(alias)
             raise
+        finally:
+            conn.leave()
 
     async def upload(
         self, alias: str, local_path: str, remote_path: str, *, timeout: float | None = None
