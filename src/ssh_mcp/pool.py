@@ -118,6 +118,39 @@ def _log_heal(message: str) -> None:
         pass
 
 
+def auth_failure_message(host: Host, pkey: paramiko.PKey | None = None) -> str:
+    """认证被拒时给出能直接照做的提示，而不是干巴巴一句 Authentication failed。"""
+    head = f"连接 {host.alias} ({host.host}:{host.port}) 认证失败"
+    method = host.auth.method
+    if method == "key":
+        if pkey is not None:
+            detail = (
+                f"\n  这把私钥对应的公钥指纹：{pkey.fingerprint}"
+                f"\n  公钥内容：{pkey.get_name()} {pkey.get_base64()}"
+                f"\n  把它追加到 {host.user}@{host.host} 的 ~/.ssh/authorized_keys，"
+                "并确认该文件 600、~/.ssh 700"
+            )
+        else:
+            detail = (
+                f"\n  确认 {host.user}@{host.host} 的 ~/.ssh/authorized_keys 里有这把私钥对应的公钥"
+                "（用 ssh-keygen -lf 对照指纹）"
+            )
+        hints = (
+            detail
+            + "\n  其它常见原因：用户名不对（key 属于别的账号）、sshd 的 PermitRootLogin no 或 "
+            "AllowUsers 限制、私钥有口令但没配 key_passphrase"
+            + f"\n  对照验证：ssh -i <私钥文件> {host.user}@{host.host}"
+        )
+    elif method == "password":
+        hints = (
+            f"\n  密码被拒：确认 hosts.{host.alias}.auth 的密码来源（*_env / *_file）指向正确口令"
+            "\n  若 sshd 只允许公钥登录，password 方式本身就会被拒"
+        )
+    else:
+        hints = "\n  agent 方式被拒：确认 ssh-agent 已启动且 ssh-add 过这把 key（ssh-add -l 能列出来）"
+    return head + hints
+
+
 @dataclass
 class ShellSession:
     """一条 PTY 交互会话。所有 channel 操作都在它的锁里做。"""
@@ -299,6 +332,8 @@ class SSHPool:
                 client.close()
             finally:
                 pass
+            if isinstance(exc, paramiko.AuthenticationException):
+                raise SSHExecError(auth_failure_message(host, kwargs.get("pkey"))) from exc
             raise SSHExecError(f"连接 {host.alias} ({host.host}:{host.port}) 失败: {exc}") from exc
 
         transport = client.get_transport()

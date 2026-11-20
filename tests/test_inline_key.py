@@ -194,3 +194,42 @@ def test_connect_with_inline_key(tmp_path: Path):
             pool.close_sync_all()
     finally:
         server.stop()
+
+
+# --------------------------------------------------------------------------- #
+# 认证失败要能自己解释清楚
+# --------------------------------------------------------------------------- #
+def test_auth_failure_message_contains_public_key(tmp_path, ed25519_pem):
+    from ssh_mcp.config import load_config
+    from ssh_mcp.pool import auth_failure_message, load_inline_key
+
+    cfg = tmp_path / "servers.yaml"
+    cfg.write_text(
+        "name: t\nhosts:\n  box:\n    host: 10.0.0.9\n    user: root\n    auth:\n"
+        "      method: key\n      key_content: |\n"
+        + "".join("        " + line + "\n" for line in ed25519_pem.splitlines()),
+        encoding="utf-8",
+    )
+    host = load_config(str(cfg)).hosts["box"]
+    key = load_inline_key(host.auth.resolve_key_content())
+    msg = auth_failure_message(host, key)
+    assert "认证失败" in msg
+    assert "authorized_keys" in msg
+    assert key.get_base64() in msg          # 直接给出要贴的公钥
+    assert key.fingerprint in msg           # 以及指纹，方便对照
+    assert "ssh -i" in msg                  # 附一条手工验证命令
+
+
+def test_auth_failure_message_for_password_host(tmp_path):
+    from ssh_mcp.config import load_config
+    from ssh_mcp.pool import auth_failure_message
+
+    cfg = tmp_path / "servers.yaml"
+    cfg.write_text(
+        "name: t\nhosts:\n  box:\n    host: 10.0.0.9\n    user: ops\n"
+        "    auth:\n      method: password\n      password: x\n",
+        encoding="utf-8",
+    )
+    host = load_config(str(cfg)).hosts["box"]
+    msg = auth_failure_message(host)
+    assert "密码被拒" in msg and "10.0.0.9" in msg
