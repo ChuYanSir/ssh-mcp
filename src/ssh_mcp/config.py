@@ -51,6 +51,9 @@ class Auth:
     password_env: str | None = None
     password_file: str | None = None
     key_file: str | None = None
+    # 直接把私钥内容贴在配置里（不想落地成文件时用），二选一
+    key_content: str | None = None
+    key_content_env: str | None = None
     key_passphrase: str | None = None
     key_passphrase_env: str | None = None
     key_passphrase_file: str | None = None
@@ -66,7 +69,11 @@ class Auth:
             return cls(method=raw.strip().lower())
         if not isinstance(raw, dict):
             raise ConfigError(f"auth 段必须是 map 或字符串，收到 {type(raw).__name__}")
-        data = {k: _expand(v) for k, v in raw.items()}
+        # 私钥正文不能被 expandvars/expanduser 动过（PEM 里出现 $ 也不会，但没必要冒险）
+        inline_keys = {"key_content"}
+        data = {k: (v if k in inline_keys else _expand(v)) for k, v in raw.items()}
+        if isinstance(data.get("key_content"), str):
+            data["key_content"] = data["key_content"].strip() + "\n"
         data["key_file"] = _expand_path(data.get("key_file"))
         data["password_file"] = _expand_path(data.get("password_file"))
         known = {f for f in cls.__dataclass_fields__}
@@ -105,12 +112,23 @@ class Auth:
     def resolve_passphrase(self) -> str | None:
         return self._secret(self.key_passphrase, self.key_passphrase_env, self.key_passphrase_file)
 
+    def resolve_key_content(self) -> str | None:
+        """内联私钥正文：key_content 优先，其次 key_content_env。都没配就返回 None。"""
+        return self._secret(self.key_content, self.key_content_env, None)
+
     def describe(self) -> dict[str, Any]:
         """脱敏描述：只暴露认证方式，不暴露任何凭据材料。"""
         return {
             "method": self.method,
             "username": self.username,
             "key_file": self.key_file,
+            "has_key_content": bool(self.key_content or self.key_content_env),
+            "key_source": (
+                "inline" if self.key_content
+                else f"env:{self.key_content_env}" if self.key_content_env
+                else f"file:{self.key_file}" if self.key_file
+                else None
+            ),
             "password_source": (
                 "literal" if self.password
                 else f"env:{self.password_env}" if self.password_env

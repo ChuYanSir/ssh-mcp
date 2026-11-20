@@ -252,9 +252,40 @@ class HostDialog(tk.Toplevel):
         self.frm_key = ttk.LabelFrame(f, text="私钥", padding=10)
         self.frm_key.grid(row=1, column=0, columnspan=2, sticky="we", pady=(0, 8))
         self.frm_key.columnconfigure(1, weight=1)
-        self._field(self.frm_key, 0, "私钥路径", "key_file", "如 ~/.ssh/id_ed25519", 40)
-        self._field(self.frm_key, 1, "私钥口令", "key_passphrase", "留空 = 不修改", 40)
-        ttk.Label(self.frm_key, text="口令存储").grid(row=2, column=0, sticky="w", pady=(0, 4))
+
+        # 私钥来源：文件路径 / 直接粘贴 PEM（不落地成文件）
+        ttk.Label(self.frm_key, text="私钥来源").grid(row=0, column=0, sticky="w", pady=(0, 4))
+        src_row = ttk.Frame(self.frm_key)
+        src_row.grid(row=0, column=1, columnspan=2, sticky="w", pady=(0, 4))
+        self.var_key_source = tk.StringVar(value="file")
+        self.vars["key_source"] = self.var_key_source
+        for value, text in (("file", "文件路径"), ("inline", "直接粘贴内容")):
+            ttk.Radiobutton(
+                src_row, text=text, value=value, variable=self.var_key_source, command=self._sync_key_source
+            ).pack(side="left", padx=(0, 14))
+
+        self.ent_key_file = self._field(self.frm_key, 1, "私钥路径", "key_file", "如 ~/.ssh/id_ed25519", 40)
+
+        self.lbl_key_content = ttk.Label(self.frm_key, text="私钥内容")
+        self.lbl_key_content.grid(row=2, column=0, sticky="nw", pady=(0, 4))
+        box = ttk.Frame(self.frm_key)
+        box.grid(row=2, column=1, columnspan=2, sticky="we", pady=(0, 2))
+        box.columnconfigure(0, weight=1)
+        self.txt_key_content = tk.Text(
+            box, height=7, wrap="none", font=("Consolas", 9), relief="flat",
+            bg=C["bg"], fg=C["txt"], padx=8, pady=6, highlightthickness=1,
+            highlightbackground=C["line"], undo=True,
+        )
+        self.txt_key_content.grid(row=0, column=0, sticky="we")
+        bar = ttk.Scrollbar(box, orient="vertical", command=self.txt_key_content.yview)
+        bar.grid(row=0, column=1, sticky="ns")
+        self.txt_key_content.configure(yscrollcommand=bar.set)
+        ttk.Label(
+            self.frm_key, text="把 -----BEGIN ... PRIVATE KEY----- 整段贴进来", foreground=C["dim"]
+        ).grid(row=3, column=1, columnspan=2, sticky="w", pady=(0, 8))
+
+        self._field(self.frm_key, 4, "私钥口令", "key_passphrase", "留空 = 不修改", 40)
+        ttk.Label(self.frm_key, text="口令存储").grid(row=5, column=0, sticky="w", pady=(0, 4))
         self.vars["key_passphrase_mode_label"] = tk.StringVar(value=STORE_VALUES[0])
         ttk.Combobox(
             self.frm_key,
@@ -262,8 +293,9 @@ class HostDialog(tk.Toplevel):
             values=STORE_VALUES,
             state="readonly",
             width=38,
-        ).grid(row=2, column=1, sticky="we", pady=(0, 4))
-        self._field(self.frm_key, 3, "口令环境变量名", "key_passphrase_env", "选环境变量时填", 40)
+        ).grid(row=5, column=1, sticky="we", pady=(0, 4))
+        self._field(self.frm_key, 6, "口令环境变量名", "key_passphrase_env", "选环境变量时填", 40)
+        self._sync_key_source()
 
         self.frm_pw = ttk.LabelFrame(f, text="密码", padding=10)
         self.frm_pw.grid(row=1, column=0, columnspan=2, sticky="we", pady=(0, 8))
@@ -364,6 +396,14 @@ class HostDialog(tk.Toplevel):
         auth = host.get("auth") or {}
         self.var_method.set(auth.get("method") or "key")
         self.vars["key_file"].set(auth.get("key_file") or "")
+        # 密钥正文不回显；编辑已有内联私钥时输入框留空即保持原值
+        inline = bool(auth.get("has_key_content")) or str(auth.get("key_source") or "").startswith("inline")
+        self.var_key_source.set("inline" if inline else "file")
+        self.txt_key_content.delete("1.0", "end")
+        if inline:
+            self.txt_key_content.insert("1.0", "（已保存的内联私钥，留空保存则保持不变）")
+            self.txt_key_content.configure(fg=C["dim"])
+            self.txt_key_content.bind("<Key>", self._clear_key_placeholder, add="+")
         src = auth.get("password_source")
         self.lbl_pw_state.configure(text=f"已保存：{src}（密码留空表示不修改）" if src else "还没有保存密码")
 
@@ -390,6 +430,26 @@ class HostDialog(tk.Toplevel):
             self.frm_agent.grid()
         else:
             self.frm_agent.grid_remove()
+        self._sync_key_source()
+
+    def _clear_key_placeholder(self, _event=None) -> None:
+        """编辑已保存的内联私钥时，第一次敲键盘就把占位提示清掉。"""
+        text = self.txt_key_content.get("1.0", "end-1c")
+        if text.startswith("（已保存的内联私钥"):
+            self.txt_key_content.delete("1.0", "end")
+            self.txt_key_content.configure(fg=C["txt"])
+
+    def _sync_key_source(self) -> None:
+        """文件路径 / 直接粘贴，二选一，切换时把另一块收起来。"""
+        inline = self.var_key_source.get() == "inline"
+        if inline:
+            self.ent_key_file.configure(state="disabled")
+            self.lbl_key_content.grid()
+            self.txt_key_content.master.grid()
+        else:
+            self.ent_key_file.configure(state="normal")
+            self.lbl_key_content.grid_remove()
+            self.txt_key_content.master.grid_remove()
 
     # ------------------------------------------------------------------ save
     def _num(self, key: str) -> int | None:
@@ -421,7 +481,9 @@ class HostDialog(tk.Toplevel):
             "known_hosts": str(self.vars["known_hosts"].get()).strip(),
             "proxy_jump": str(self.vars["proxy_jump"].get()).strip(),
             "auth_method": self.var_method.get(),
+            "key_source": self.var_key_source.get(),
             "key_file": str(self.vars["key_file"].get()).strip(),
+            "key_content": ("" if self.txt_key_content.get("1.0", "end-1c").startswith("（已保存的内联私钥") else self.txt_key_content.get("1.0", "end-1c")),
             "key_passphrase": str(self.vars["key_passphrase"].get()),
             "key_passphrase_mode": mode_key(self.vars["key_passphrase_mode_label"]),
             "key_passphrase_env": str(self.vars["key_passphrase_env"].get()).strip(),

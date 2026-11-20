@@ -1,10 +1,10 @@
-﻿# ssh-mcp
+# ssh-mcp
 
 把 SSH 凭据收进一个中间服务：客户端会话只拿 `alias` 就能执行命令，**永远看不到用户名、密码、私钥**。
 配了一个原生桌面端（tkinter，无浏览器、无 Electron），增删主机就是在窗口里填表。
 
 > **作者**：[初颜Sir](https://github.com/ChuYanSir) · chuyansir@163.com
-> **仓库**：<https://github.com/ChuYanSir/ssh-mcp> · **版本**：v1.3.0
+> **仓库**：<https://github.com/ChuYanSir/ssh-mcp> · **版本**：v1.4.0
 
 [![ci](https://github.com/ChuYanSir/ssh-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/ChuYanSir/ssh-mcp/actions/workflows/ci.yml)
 [![release](https://github.com/ChuYanSir/ssh-mcp/actions/workflows/release.yml/badge.svg)](https://github.com/ChuYanSir/ssh-mcp/actions/workflows/release.yml)
@@ -226,6 +226,14 @@ auth:                                   # 私钥（推荐）
   key_file: ~/.ssh/id_ed25519
   key_passphrase_env: PROD_KEY_PASSPHRASE
 
+auth:                                   # 私钥：不落地成文件，直接把 PEM 贴进配置
+  method: key
+  key_content: |
+    -----BEGIN OPENSSH PRIVATE KEY-----
+    b3BlbnNzaC1rZXktdjEAAAAA...
+    -----END OPENSSH PRIVATE KEY-----
+  # 或者内容放环境变量：key_content_env: PROD_SSH_KEY_PEM
+
 auth:                                   # 密码：环境变量 / 凭据文件 / 字面量
   method: password
   password_env: PROD_DB_SSH_PASS
@@ -242,6 +250,22 @@ proxy_jump: bastion                     # 经另一台已配置的 alias 进内�
 ```
 
 凭据解析优先级：字面量 > `*_env` > `*_file`。生产建议只用后两种。
+
+私钥三种来源二选一（`key_file` / `key_content` / `key_content_env`），配两个只会用第一个：
+
+- **`key_file`**：私钥留在磁盘上（最常规）；
+- **`key_content`**：把 PEM 正文直接贴进 `servers.yaml`。桌面端在「认证与 sudo」页选
+  **直接粘贴内容**，整段 `-----BEGIN ... PRIVATE KEY-----` 贴进去即可，保存时会写成 YAML 的 `|` 块，
+  不会转义成一行。注意 `servers.yaml` 本身就成了密钥文件，记得别提交、权限收紧；
+- **`key_content_env`**：内容来自环境变量，配置里只留变量名。
+
+三种都支持用 `key_passphrase` / `key_passphrase_env` / `key_passphrase_file` 提供私钥口令；
+PEM 解析失败时会直接报「解析失败（…）」并提示口令是否匹配，而不是抛 paramiko 的原始堆栈。
+
+![私钥直接粘贴](docs/ui-key-inline.png)
+
+> 内联私钥不回显：再次打开编辑时输入框只显示「已保存的内联私钥」，留空保存即保持不变；
+> 想换内容直接整段覆盖即可。切回「文件路径」会把配置里的 `key_content` 清掉。
 
 ### 5.3 策略 `policy`
 

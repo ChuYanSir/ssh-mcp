@@ -1,4 +1,4 @@
-﻿"""servers.yaml 的读写层：给桌面端用。
+"""servers.yaml 的读写层：给桌面端用。
 
 原则：
 1. 先在临时文件上跑一遍 `load_config()` 校验，通过了才覆盖正式文件；
@@ -194,10 +194,29 @@ def build_entry(payload: dict[str, Any], existing: dict[str, Any], alias: str) -
     old_auth = _existing_auth(existing)
 
     if method == "key":
-        key_file = (payload.get("key_file") or old_auth.get("key_file") or "").strip()
-        if not key_file:
-            raise ConfigError("私钥认证需要填 key_file")
-        auth["key_file"] = key_file
+        # 两种来源二选一：文件路径，或直接粘贴 PEM 正文
+        source = str(payload.get("key_source") or "").strip().lower()
+        raw_content = payload.get("key_content")
+        content = raw_content.strip() + "\n" if isinstance(raw_content, str) and raw_content.strip() else ""
+        key_file = (payload.get("key_file") or "").strip()
+        if not source:
+            source = "inline" if content else "file"
+        if source == "inline":
+            if not content:
+                # 编辑已有内联私钥时，输入框是空的（不回显密钥），保留原来的
+                keep = str(old_auth.get("key_content") or "")
+                if not keep:
+                    raise ConfigError("选了「直接粘贴内容」，但私钥内容为空")
+                content = keep
+            if "PRIVATE KEY-----" not in content:
+                raise ConfigError("私钥内容看起来不是 PEM（缺少 -----BEGIN ... PRIVATE KEY-----）")
+            auth["key_content"] = content
+            # 切到内联时把旧的文件路径清掉，避免两份凭据并存
+        else:
+            key_file = key_file or str(old_auth.get("key_file") or "").strip()
+            if not key_file:
+                raise ConfigError("私钥认证需要填私钥路径，或改成「直接粘贴内容」")
+            auth["key_file"] = key_file
         _apply_secret(
             auth,
             existing=old_auth,
@@ -287,8 +306,23 @@ def delete_host(config_path: Path, alias: str) -> None:
     _validate_and_write(config_path, raw)
 
 
+class _ConfigDumper(yaml.SafeDumper):
+    """多行字符串（比如内联私钥 PEM）用 `|` 块样式写，别排成一行行转义。"""
+
+
+def _represent_str(dumper: yaml.SafeDumper, data: str):
+    if "\n" in data:
+        return dumper.represent_scalar("tag:yaml.org,2002:str", data, style="|")
+    return dumper.represent_scalar("tag:yaml.org,2002:str", data)
+
+
+_ConfigDumper.add_representer(str, _represent_str)
+
+
 def _validate_and_write(config_path: Path, raw: dict[str, Any]) -> None:
-    text = yaml.safe_dump(raw, allow_unicode=True, sort_keys=False, default_flow_style=False)
+    text = yaml.dump(
+        raw, Dumper=_ConfigDumper, allow_unicode=True, sort_keys=False, default_flow_style=False
+    )
 
     fd, tmp_name = tempfile.mkstemp(prefix="servers.", suffix=".yaml", dir=str(config_path.parent))
     os.close(fd)

@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import posixpath
 import re
 import shlex
@@ -83,6 +84,27 @@ def strip_ansi(text: str) -> str:
     cleaned = _ANSI_RE.sub("", text)
     cleaned = cleaned.replace("\r\n", "\n").replace("\r", "\n")
     return _CTRL_RE.sub("", cleaned)
+
+
+def load_inline_key(pem: str, passphrase: str | None = None, alias: str = "?") -> paramiko.PKey:
+    """把配置里贴的私钥正文解析成 paramiko 的 PKey。
+
+    paramiko 5.1 的 `PKey.from_private_key` 实际是坏的（内部 `cls(file_obj=...)` 会
+    直接 TypeError），所以这里按 `paramiko.key_classes` 逐个试：RSA / Ed25519 / ECDSA。
+    """
+    last: Exception | None = None
+    for cls in getattr(paramiko, "key_classes", (paramiko.RSAKey, paramiko.Ed25519Key, paramiko.ECDSAKey)):
+        try:
+            return cls.from_private_key(io.StringIO(pem), password=passphrase or None)
+        except paramiko.PasswordRequiredException as exc:
+            # 加密私钥没给口令 / 口令错：不用再试别的算法了
+            last = exc
+        except Exception as exc:  # noqa: BLE001 - 换下一个算法继续试
+            last = exc
+    raise SSHExecError(
+        f"hosts.{alias}.auth.key_content 解析失败（{type(last).__name__}: {last}）；"
+        "确认贴的是完整 PEM，且 key_passphrase 与私钥匹配"
+    )
 
 
 def _log_heal(message: str) -> None:
@@ -255,12 +277,20 @@ class SSHPool:
         if host.auth.method == "password":
             kwargs["password"] = host.auth.resolve_password()
         elif host.auth.method == "key":
-            if not host.auth.key_file:
-                raise SSHExecError(f"hosts.{host.alias}.auth 使用 key 方式但未配置 key_file")
-            kwargs["key_filename"] = host.auth.key_file
             pp = host.auth.resolve_passphrase()
-            if pp:
-                kwargs["passphrase"] = pp
+            pem = host.auth.resolve_key_content()
+            if pem:
+                # 直接把私钥内容贴在配置里：不走文件，自己解析成 PKey
+                kwargs["pkey"] = load_inline_key(pem, pp, host.alias)
+            else:
+                if not host.auth.key_file:
+                    raise SSHExecError(
+                        f"hosts.{host.alias}.auth 使用 key 方式，但 key_file / key_content / "
+                        "key_content_env 三者都没配"
+                    )
+                kwargs["key_filename"] = host.auth.key_file
+                if pp:
+                    kwargs["passphrase"] = pp
 
         try:
             client.connect(**kwargs)

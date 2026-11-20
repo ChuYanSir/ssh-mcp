@@ -97,6 +97,21 @@ def is_public(ip: str) -> bool:
     return not any(addr in net for net in ALLOWED_NETS)
 
 
+def _has_key_material(lines: list[str], begin_idx: int) -> bool:
+    """PEM 头后面是否真有一段 base64 正文（≥40 字符）。
+
+    README / 示例配置里常写 `-----BEGIN OPENSSH PRIVATE KEY-----` 加一行 `...`，
+    那是文档占位，不该拦；真私钥的正文一定是一大段 base64。
+    """
+    for line in lines[begin_idx + 1 : begin_idx + 4]:
+        body = line.strip().lstrip("#").strip()      # 允许注释里的示例
+        if body.startswith("-----END"):
+            return False
+        if len(body) >= 40 and re.fullmatch(r"[A-Za-z0-9+/=]+", body):
+            return True
+    return False
+
+
 def _rel(path: Path) -> str:
     try:
         return path.relative_to(ROOT).as_posix()
@@ -119,7 +134,8 @@ def scan(paths: list[Path]) -> list[str]:
             text = path.read_text(encoding="utf-8")
         except (UnicodeDecodeError, OSError):
             continue
-        for lineno, line in enumerate(text.splitlines(), 1):
+        lines = text.splitlines()
+        for lineno, line in enumerate(lines, 1):
             for match in IPV4.finditer(line):
                 ip = match.group(1)
                 # 版本号/时间戳之类会误报，只保留看起来像合法地址的
@@ -128,8 +144,11 @@ def scan(paths: list[Path]) -> list[str]:
                 if is_public(ip):
                     problems.append(f"{_rel(path)}:{lineno}: 公网 IP {ip}  —— {line.strip()[:90]}")
             for pattern, label in SECRETS:
-                if pattern.search(line):
-                    problems.append(f"{_rel(path)}:{lineno}: 疑似{label} —— {line.strip()[:90]}")
+                if not pattern.search(line):
+                    continue
+                if label == "私钥" and not _has_key_material(lines, lineno - 1):
+                    continue  # 文档里的 `-----BEGIN ... -----` 占位示例不算
+                problems.append(f"{_rel(path)}:{lineno}: 疑似{label} —— {line.strip()[:90]}")
     return problems
 
 

@@ -96,9 +96,10 @@ class LocalSFTPServer(SFTPServerInterface):
 
 
 class _ServerIface(paramiko.ServerInterface):
-    def __init__(self, username: str, password: str, root: Path) -> None:
+    def __init__(self, username: str, password: str, root: Path, authorized_key=None) -> None:
         self.username = username
         self.password = password
+        self.authorized_key = authorized_key
         self.sftp_root = str(root)
         self.command: str | None = None
         self.pty_size: tuple[int, int] = (0, 0)
@@ -109,8 +110,13 @@ class _ServerIface(paramiko.ServerInterface):
             return paramiko.AUTH_SUCCESSFUL
         return paramiko.AUTH_FAILED
 
+    def check_auth_publickey(self, username, key):
+        if self.authorized_key is not None and username == self.username and key == self.authorized_key:
+            return paramiko.AUTH_SUCCESSFUL
+        return paramiko.AUTH_FAILED
+
     def get_allowed_auths(self, username):
-        return "password"
+        return "publickey,password" if self.authorized_key is not None else "password"
 
     def check_channel_request(self, kind, chanid):
         if kind == "session":
@@ -201,7 +207,8 @@ class _ServerIface(paramiko.ServerInterface):
 
 
 class FakeSSHServer:
-    def __init__(self, username: str = "testuser", password: str = "testpass") -> None:
+    def __init__(self, username: str = "testuser", password: str = "testpass", authorized_key=None) -> None:
+        self.authorized_key = authorized_key
         self.username = username
         self.password = password
         self.root = Path(tempfile.mkdtemp(prefix="ssh-mcp-root-"))
@@ -233,7 +240,7 @@ class FakeSSHServer:
         transport.set_subsystem_handler("sftp", SFTPServer, LocalSFTPServer)
         self.transports.append(transport)
         try:
-            transport.start_server(server=_ServerIface(self.username, self.password, self.root))
+            transport.start_server(server=_ServerIface(self.username, self.password, self.root, self.authorized_key))
         except Exception:  # noqa: BLE001
             return
         while transport.is_active() and not self._closing:

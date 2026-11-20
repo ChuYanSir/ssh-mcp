@@ -70,6 +70,12 @@ hosts:
       key_file: ~/.ssh/id_ed25519
       # 私钥有密码时：从环境变量取，别写明文
       key_passphrase_env: PROD_KEY_PASSPHRASE
+      # 也可以不落地成文件，直接把私钥正文贴在配置里（桌面端「认证」页选「直接粘贴内容」）：
+      # key_content: |
+      #   -----BEGIN OPENSSH PRIVATE KEY-----
+      #   ...
+      #   -----END OPENSSH PRIVATE KEY-----
+      # 或者让内容来自环境变量：key_content_env: PROD_SSH_KEY_PEM
     sudo:
       password_env: PROD_SUDO_PASS     # sudo 密码放环境变量
       user: root
