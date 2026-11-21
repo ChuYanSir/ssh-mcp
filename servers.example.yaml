@@ -46,6 +46,9 @@ policy:
   idle_probe_after: 240          # 连接空闲超过多少秒后，使用前先探一次活
   heal_interval: 120             # 后台巡检间隔（秒），<=0 关闭后台线程
   probe_timeout: 10              # 单次探活超时（秒）
+  # stdio 模式下：连续多少秒没有任何工具调用就自行退出，让客户端下次调用重启一个干净进程
+  # （针对「进程活着但管道已废」的僵死；0 = 永不自动退出）
+  exit_if_idle: 1800
   # 空 = 允许 hosts 里的全部；填了则只有列出的 alias 可用（多租户时隔离用）
   allowed_hosts: []
   dry_run: false                  # true = 只校验不执行（调试配置用）

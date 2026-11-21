@@ -71,6 +71,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="放开 DNS rebinding 的 Host 头校验（监听非回环地址时自动放开）",
     )
     p.add_argument("--print-config", action="store_true", help="只打印解析后的脱敏配置并退出")
+    p.add_argument(
+        "--no-idle-exit",
+        action="store_true",
+        help="stdio 模式下关掉空闲自退（默认按 policy.exit_if_idle，30 分钟无请求就退出让客户端重启）",
+    )
     return p
 
 
@@ -84,7 +89,11 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     transport = "streamable-http" if args.transport == "http" else args.transport
-    init_runtime(args.config)
+    rt = init_runtime(args.config)
+    if transport == "stdio" and not args.no_idle_exit:
+        # 长期收不到请求就自己退出，让客户端下一次调用重新拉起一个干净进程。
+        # 针对的是「进程活着但管道已废」的僵死：我们收不到请求，也就无从回答。
+        rt.start_idle_watchdog(rt.cfg.policy.exit_if_idle)
 
     if args.print_config:
         import json

@@ -237,6 +237,8 @@ class Policy:
     idle_probe_after: float = 240.0
     heal_interval: float = 120.0
     probe_timeout: float = 10.0
+    # stdio 模式下：连续多久没有任何工具调用就自行退出（让客户端重启一个干净进程）
+    exit_if_idle: float = 1800.0
     allowed_hosts: list[str] = field(default_factory=list)  # 空 = 允许配置里的全部
     dry_run: bool = False
 
@@ -285,6 +287,7 @@ class Policy:
             "idle_probe_after": self.idle_probe_after,
             "heal_interval": self.heal_interval,
             "probe_timeout": self.probe_timeout,
+            "exit_if_idle": self.exit_if_idle,
             "allowed_hosts": self.allowed_hosts or "all-configured",
             "dry_run": self.dry_run,
         }

@@ -174,7 +174,7 @@ def test_upload_tool_forwards_timeout(monkeypatch, tmp_path: Path):
     class FakeRT:
         pool = FakePool()
 
-    monkeypatch.setattr(srv, "runtime", lambda: FakeRT())
+    monkeypatch.setattr(srv, "runtime", lambda *a, **k: FakeRT())
     monkeypatch.setattr(srv, "_audit", lambda *a, **k: None)
 
     local = tmp_path / "a.txt"

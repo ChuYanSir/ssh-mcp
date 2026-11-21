@@ -4,7 +4,7 @@
 配了一个原生桌面端（tkinter，无浏览器、无 Electron），增删主机就是在窗口里填表。
 
 > **作者**：[初颜Sir](https://github.com/ChuYanSir) · chuyansir@163.com
-> **仓库**：<https://github.com/ChuYanSir/ssh-mcp> · **版本**：v1.4.1
+> **仓库**：<https://github.com/ChuYanSir/ssh-mcp> · **版本**：v1.5.0
 
 [![ci](https://github.com/ChuYanSir/ssh-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/ChuYanSir/ssh-mcp/actions/workflows/ci.yml)
 [![release](https://github.com/ChuYanSir/ssh-mcp/actions/workflows/release.yml/badge.svg)](https://github.com/ChuYanSir/ssh-mcp/actions/workflows/release.yml)
@@ -396,6 +396,32 @@ ssh_shell_close { "session_id": "abc123" }
 ```
 
 关掉它：`policy.heal_interval: 0`（后台线程）或 `policy.idle_probe_after: 0`（使用前探活）。
+
+### 8.1 进程级自愈（1.5.0）
+
+连接层面的自愈救不了另一种僵死：**进程活着、但客户端那侧的管道已经不工作了**。
+表现是——客户端每次调用都 `Request timed out`，可服务端进程 CPU 接近 0、线程全在空转、
+审计日志一条不涨。这时不是 SSH 的问题，请求根本没送到。
+
+两个机制：
+
+| 机制 | 说明 |
+|---|---|
+| **请求到达日志** | 每个工具调用落一行到 `~/.ssh-mcp/logs/requests.log`（超 2MB 滚一份）。客户端超时后先看这里：**有时间点的记录 = 请求到了**，没有 = 请求没送到，直接重启服务进程 |
+| **空闲自退** | stdio 模式下连续 `policy.exit_if_idle` 秒（默认 1800）没有任何调用就 `os._exit(0)`，并在 `~/.ssh-mcp/logs/lifecycle.log` 留一行。客户端下次调用会重新拉起一个干净进程，把「静默僵死」变成「自动重来一次」 |
+
+```powershell
+# 想立刻验证请求有没有到达
+Get-Content ~\.ssh-mcp\logs\requests.log -Tail 20
+# 想关掉空闲自退（比如客户端不会自动重启子进程）
+ssh-mcp --transport stdio --no-idle-exit
+```
+
+`ssh_status` 里也能看到会话状态：
+
+```json
+"session": { "requests": 128, "idle_seconds": 12, "exit_if_idle": 1800 }
+```
 
 ---
 

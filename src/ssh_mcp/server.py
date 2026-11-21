@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import platform
 import threading
 import time
@@ -33,6 +34,17 @@ INSTRUCTIONS = """\
 """
 
 
+def _log_line(message: str) -> None:
+    """把自愈/自退动作写到 ~/.ssh-mcp/logs/lifecycle.log（写文件失败也不影响业务）。"""
+    try:
+        path = Path.home() / ".ssh-mcp" / "logs" / "lifecycle.log"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as fh:
+            fh.write(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] pid={os.getpid()} {message}\n")
+    except OSError:
+        pass
+
+
 class Runtime:
     """配置 + 审计 + 连接池的持有者。
 
@@ -53,9 +65,58 @@ class Runtime:
         self._path = Path(self.cfg.source) if self.cfg.source else None
         self._stamp = self._config_stamp()
         self._lock = threading.Lock()
+        # 请求取证 + 空闲自退
+        self.last_request_at = time.time()
+        self.request_count = 0
+        self.exit_if_idle = 0.0
+        self._idle_thread: threading.Thread | None = None
         if autoload:
             # 后台巡检：把空闲后失活的连接主动摘掉，避免下一条命令踩上去
             self.pool.start_healer()
+
+    # ------------------------------------------------------------- 请求取证
+    def note_request(self, tool: str | None) -> None:
+        self.last_request_at = time.time()
+        self.request_count += 1
+        if not tool:
+            return
+        try:
+            path = Path.home() / ".ssh-mcp" / "logs" / "requests.log"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            if path.is_file() and path.stat().st_size > 2 * 1024 * 1024:
+                path.rename(path.with_suffix(".log.1"))  # 超 2MB 滚一份，只留两份
+            with path.open("a", encoding="utf-8") as fh:
+                fh.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')}\t{tool}\n")
+        except OSError:
+            pass
+
+    # --------------------------------------------------------------- 空闲自退
+    def start_idle_watchdog(self, timeout: float) -> None:
+        """stdio 模式下：长期没有任何请求就自行退出，让客户端下次调用重新拉起。
+
+        针对的是「进程活着、但客户端那侧管道已经不工作了」这种僵死：我们收不到请求，
+        也就无从回答；退出后客户端会拿到 EOF，下次调用会重新 spawn 一个干净进程。
+        """
+        if timeout <= 0 or self._idle_thread is not None:
+            return
+        self.exit_if_idle = float(timeout)
+        self._idle_thread = threading.Thread(
+            target=self._idle_loop, args=(float(timeout),), daemon=True, name="ssh-mcp-idle-exit"
+        )
+        self._idle_thread.start()
+
+    def _idle_loop(self, timeout: float) -> None:
+        while True:
+            time.sleep(min(30.0, max(5.0, timeout / 4)))
+            idle = time.time() - self.last_request_at
+            if idle < timeout:
+                continue
+            _log_line(f"idle for {int(idle)}s (> {int(timeout)}s), exiting so the client respawns us")
+            try:
+                self.pool.stop_healer()
+            except Exception:  # noqa: BLE001
+                pass
+            os._exit(0)
 
     # ----------------------------------------------------------- 变更检测
     def _config_stamp(self) -> tuple[int, int] | None:
@@ -129,11 +190,18 @@ def init_runtime(config_path: str | None = None, *, autoload: bool = True) -> Ru
     return _rt
 
 
-def runtime() -> Runtime:
-    """所有工具的统一入口——自动热加载就挂在这里，12 个工具都白拿。"""
+def runtime(tool: str | None = None) -> Runtime:
+    """所有工具的统一入口——自动热加载就挂在这里，12 个工具都白拿。
+
+    `tool` 只用于「请求到底有没有到达进程」的取证：每次调用落一行到
+    ~/.ssh-mcp/logs/requests.log。客户端超时但这里没有对应记录，就说明请求
+    根本没送到服务端（管道/客户端那边的问题），不需要再怀疑 SSH 层。
+    """
+    global _rt
     if _rt is None:
-        return init_runtime()
+        _rt = init_runtime()
     _rt.maybe_reload()
+    _rt.note_request(tool)
     return _rt
 
 
@@ -141,7 +209,9 @@ mcp = MCPServer("ssh-mcp", instructions=INSTRUCTIONS)
 
 
 def _audit(event: str, **fields: Any) -> None:
-    runtime().audit.write(event, **fields)
+    # 直接用已有的 Runtime：别让审计再走一次 runtime()，否则请求计数会翻倍
+    rt = _rt if _rt is not None else runtime()
+    rt.audit.write(event, **fields)
 
 
 @mcp.tool()
@@ -150,7 +220,7 @@ def ssh_list_hosts(
     keyword: Annotated[str | None, Field(description="按别名/主机/说明模糊过滤")] = None,
 ) -> dict[str, Any]:
     """列出所有已配置的 SSH 目标（只返回别名等元数据，不含任何凭据）。"""
-    rt = runtime()
+    rt = runtime("ssh_list_hosts")
     policy = rt.cfg.policy
     items: list[dict[str, Any]] = []
     for alias, host in sorted(rt.cfg.hosts.items()):
@@ -183,7 +253,7 @@ async def ssh_exec(
 
     凭据由服务端持有，本工具不接受也不需要 host/user/password 参数。
     """
-    rt = runtime()
+    rt = runtime("ssh_exec")
     started = time.perf_counter()
     try:
         res = await rt.pool.exec(
@@ -228,7 +298,7 @@ async def ssh_exec_batch(
     max_output_bytes: Annotated[int | None, Field(description="单机 stdout/stderr 上限字节数")] = None,
 ) -> dict[str, Any]:
     """并发在多台主机执行同一条命令，逐台返回结果（单台失败不影响其他主机）。"""
-    rt = runtime()
+    rt = runtime("ssh_exec_batch")
     targets = aliases or [a for a in sorted(rt.cfg.hosts) if not rt.cfg.policy.allowed_hosts or a in rt.cfg.policy.allowed_hosts]
     if not targets:
         return {"ok": False, "error": "没有可执行的目标主机"}
@@ -255,7 +325,7 @@ async def ssh_check(
     alias: Annotated[str, Field(description="要探测的主机别名")],
 ) -> dict[str, Any]:
     """握手测试：确认该别名能连上，并返回远端 uname / 用户 / 时间等基本信息。"""
-    rt = runtime()
+    rt = runtime("ssh_check")
     probes = "uname -a 2>/dev/null || ver; id 2>/dev/null || whoami; date"
     try:
         res = await rt.pool.exec(alias, probes, timeout=30)
@@ -284,7 +354,7 @@ async def ssh_upload(
     timeout: Annotated[float | None, Field(description="传输空闲超时秒数，默认取命令超时×2（上限 max_transfer_timeout）")] = None,
 ) -> dict[str, Any]:
     """通过 SFTP 上传本机文件到远端，返回字节数与 sha256。"""
-    rt = runtime()
+    rt = runtime("ssh_upload")
     try:
         out = await rt.pool.upload(alias, local_path, remote_path, timeout=timeout)
         _audit("upload", alias=alias, local_path=local_path, remote_path=remote_path, ok=out["ok"])
@@ -302,7 +372,7 @@ async def ssh_download(
     timeout: Annotated[float | None, Field(description="传输空闲超时秒数，默认取命令超时×2")] = None,
 ) -> dict[str, Any]:
     """通过 SFTP 从远端下载文件到本机。"""
-    rt = runtime()
+    rt = runtime("ssh_download")
     try:
         out = await rt.pool.download(alias, remote_path, local_path, timeout=timeout)
         _audit("download", alias=alias, remote_path=remote_path, local_path=local_path, ok=out["ok"])
@@ -321,7 +391,7 @@ async def ssh_write_file(
     timeout: Annotated[float | None, Field(description="传输空闲超时秒数")] = None,
 ) -> dict[str, Any]:
     """直接把文本内容写到远端文件（适合小配置文件，避免本机中转）。"""
-    rt = runtime()
+    rt = runtime("ssh_write_file")
     try:
         out = await rt.pool.write_remote_file(alias, remote_path, content, mode, timeout=timeout)
         _audit("write_file", alias=alias, remote_path=remote_path, bytes=out["bytes_written"])
@@ -339,7 +409,7 @@ async def ssh_read_file(
     timeout: Annotated[float | None, Field(description="传输空闲超时秒数")] = None,
 ) -> dict[str, Any]:
     """读取远端文本文件内容（超过 max_bytes 会截断并标记 truncated）。"""
-    rt = runtime()
+    rt = runtime("ssh_read_file")
     try:
         out = await rt.pool.read_remote_file(alias, remote_path, max_bytes, timeout=timeout)
         _audit("read_file", alias=alias, remote_path=remote_path, size=out["size"])
@@ -362,7 +432,7 @@ async def ssh_shell_open(
     返回 session_id 和首屏输出。后续用 ssh_shell_send 发按键、ssh_shell_read 取输出、
     ssh_shell_resize 改窗口大小、ssh_shell_close 关闭。别忘了关，否则会一直占着连接。
     """
-    rt = runtime()
+    rt = runtime("ssh_shell_open")
     try:
         out = await rt.pool.open_shell(alias, cols=cols, rows=rows, term=term, command=command)
         _audit("shell_open", alias=alias, session_id=out["session_id"], size=f"{cols}x{rows}", command=command)
@@ -384,7 +454,7 @@ async def ssh_shell_send(
     常见按键：回车 `\\r`、Ctrl-C `\\u0003`、Ctrl-D `\\u0004`、Esc `\\u001b`、
     Tab `\\t`、退格 `\\u007f`、方向键 `\\u001b[A`/`[B`/`[C`/`[D`。
     """
-    rt = runtime()
+    rt = runtime("ssh_shell_send")
     try:
         out = await rt.pool.shell_send(
             session_id, data, wait=max(0.05, wait_ms / 1000), timeout=max(0.2, timeout_ms / 1000)
@@ -401,7 +471,7 @@ async def ssh_shell_read(
     timeout_ms: Annotated[int, Field(description="最多等多久新输出，默认 1000ms")] = 1000,
 ) -> dict[str, Any]:
     """读交互式 shell 的新输出（不发送任何内容），适合观察 tail -f / 长任务的进展。"""
-    rt = runtime()
+    rt = runtime("ssh_shell_read")
     try:
         out = await rt.pool.shell_read(session_id, timeout=max(0.1, timeout_ms / 1000))
         return {"ok": True, **out}
@@ -416,7 +486,7 @@ async def ssh_shell_resize(
     rows: Annotated[int, Field(description="新的行数")],
 ) -> dict[str, Any]:
     """调整交互式 shell 的终端大小（等价于拖拽终端窗口，全屏程序会重排）。"""
-    rt = runtime()
+    rt = runtime("ssh_shell_resize")
     try:
         return {"ok": True, **await rt.pool.shell_resize(session_id, cols, rows)}
     except Exception as exc:  # noqa: BLE001
@@ -428,7 +498,7 @@ async def ssh_shell_close(
     session_id: Annotated[str, Field(description="要关闭的 session_id")],
 ) -> dict[str, Any]:
     """关闭交互式 shell 会话，释放对应的 channel。"""
-    rt = runtime()
+    rt = runtime("ssh_shell_close")
     out = await rt.pool.shell_close(session_id)
     _audit("shell_close", session_id=session_id, existed=out.get("existed"))
     return {"ok": True, **out}
@@ -437,7 +507,7 @@ async def ssh_shell_close(
 @mcp.tool()
 async def ssh_status() -> dict[str, Any]:
     """查看服务状态：已建立的连接、配置来源、策略与运行环境。"""
-    rt = runtime()
+    rt = runtime("ssh_status")
     return {
         "server": rt.cfg.name,
         "config_source": rt.cfg.source,
@@ -459,6 +529,12 @@ async def ssh_status() -> dict[str, Any]:
         },
         "connections": rt.pool.status(),
         "healer": rt.pool.heal_status(),
+        "session": {
+            "requests": rt.request_count,
+            "idle_seconds": int(time.time() - rt.last_request_at),
+            "exit_if_idle": rt.exit_if_idle,
+            "requests_log": str(Path.home() / ".ssh-mcp" / "logs" / "requests.log"),
+        },
         "shells": rt.pool.shell_list(),
     }
 
@@ -468,7 +544,7 @@ async def ssh_close(
     alias: Annotated[str | None, Field(description="只关闭某台主机的连接；留空关闭全部")] = None,
 ) -> dict[str, Any]:
     """主动断开连接池里的 SSH 连接（下次调用会自动重连）。"""
-    rt = runtime()
+    rt = runtime("ssh_close")
     closed = await rt.pool.close(alias)
     _audit("close", closed=closed)
     return {"closed": closed, "remaining": [r["alias"] for r in rt.pool.status()]}
@@ -480,7 +556,7 @@ async def ssh_reload_config() -> dict[str, Any]:
 
     配置变化通常已经被自动热加载接管，这个工具留给「想立刻生效 / 强制重连」的场景。
     """
-    rt = runtime()
+    rt = runtime("ssh_reload_config")
     closed = await rt.pool.close()
     reloaded = rt.reload()
     _audit("reload_config", config=rt.cfg.source, closed=closed, reloaded=reloaded)
@@ -499,5 +575,5 @@ async def ssh_audit_tail(
     limit: Annotated[int, Field(description="返回最近多少条记录")] = 20,
 ) -> dict[str, Any]:
     """查看最近的审计记录（谁在什么时候对哪台机跑了什么命令）。"""
-    rt = runtime()
+    rt = runtime("ssh_audit_tail")
     return {"path": rt.cfg.audit.path, "enabled": rt.cfg.audit.enabled, "records": rt.audit.tail(limit)}
