@@ -300,6 +300,12 @@ def _open_tunnel_http(cfg: ProxyConfig, host: str, port: int) -> socket.socket:
             head.append(f"Proxy-Authorization: Basic {token}")
         sock.sendall(("\r\n".join(head) + "\r\n\r\n").encode())
         resp = _read_until(sock, b"\r\n\r\n")
+        if not resp:
+            # 实测有些代理池对特定目标域名直接掐连接（0 字节），不是我们的协议写错了
+            raise ProxyError(
+                f"代理在 CONNECT {target} 阶段直接断开了连接（0 字节）："
+                "目标域名可能被该代理拒绝，或它不支持 CONNECT / HTTPS"
+            )
         line = resp.split(b"\r\n", 1)[0]
         m = _STATUS_RE.match(line)
         if not m:
@@ -427,7 +433,10 @@ class ProxyResponse:
 def _parse_response(sock: socket.socket, url: str, elapsed_ms: int, limit: int) -> ProxyResponse:
     head = _read_until(sock, b"\r\n\r\n")
     if not head:
-        raise ProxyError("代理没有返回任何响应")
+        raise ProxyError(
+            "代理没有返回任何响应就关闭了连接（0 字节）：检查 proxyHost / proxyPort / 认证，"
+            "或换个目标域名试试"
+        )
     head_part, _, rest = head.partition(b"\r\n\r\n")
     lines = head_part.split(b"\r\n")
     m = _STATUS_RE.match(lines[0])
