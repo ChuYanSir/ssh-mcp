@@ -60,6 +60,15 @@ SECRETS = [
         ),
         "明文密码",
     ),
+    (
+        # 出口代理的密码同样不该进仓库（proxyPass / proxy_pass / password 都覆盖到）
+        re.compile(
+            r"(?i)\bproxy_?pass\s*:\s*[\"']?"
+            r"(?!\*|env\b|file\b|DEMO|CHANGE|your|xxx|test|dummy|example)"
+            r"[^\s\"'{}]{6,}"
+        ),
+        "明文代理密码",
+    ),
 ]
 TEXT_SUFFIXES = {
     ".py", ".md", ".yml", ".yaml", ".toml", ".txt", ".json", ".cfg", ".ini",

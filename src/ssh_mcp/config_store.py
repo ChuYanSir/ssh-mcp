@@ -295,6 +295,88 @@ def upsert_host(config_path: Path, alias: str, payload: dict[str, Any]) -> dict[
     return {"alias": alias, "host": entry["host"], "port": entry.get("port", 22)}
 
 
+PROXY_KEYS = (
+    "enabled",
+    "protocol",
+    "host",
+    "port",
+    "username",
+    "password",
+    "max_concurrency",
+    "requests_per_second",
+    "read_timeout",
+    "connect_timeout",
+    "max_retries",
+    "retry_interval",
+)
+
+
+def upsert_proxy(config_path: Path, payload: dict[str, Any]) -> dict[str, Any]:
+    """写入顶层 proxy: 段（出口代理，和 hosts 无关）。"""
+    raw = _read_raw(config_path)
+    enabled = bool(payload.get("enabled"))
+    section: dict[str, Any] = {"enabled": enabled}
+
+    protocol = str(payload.get("protocol") or "HTTP").upper()
+    protocol = "SOCKS5" if protocol.startswith("SOCKS") else "HTTP"
+    section["protocol"] = protocol
+
+    host = str(payload.get("host") or "").strip()
+    port = payload.get("port")
+    if enabled:
+        if not host:
+            raise ConfigError("启用代理必须填代理主机（proxyHost）")
+        try:
+            port = int(port)
+        except (TypeError, ValueError):
+            raise ConfigError("代理端口必须是整数") from None
+        if not (1 <= port <= 65535):
+            raise ConfigError(f"代理端口不合法：{port}")
+    if host:
+        section["host"] = host
+    if port:
+        section["port"] = int(port)
+
+    user = str(payload.get("username") or "").strip()
+    password = str(payload.get("password") or "")
+    old = raw.get("proxy") if isinstance(raw.get("proxy"), dict) else {}
+    if user:
+        section["username"] = user
+        # 密码留空 = 不修改（桌面端不回显）
+        if password:
+            section["password"] = password
+        elif old.get("password"):
+            section["password"] = old["password"]
+    elif old.get("password") and str(payload.get("keep_password", "")) == "1":
+        section["password"] = old["password"]
+
+    for key in (
+        "max_concurrency",
+        "requests_per_second",
+        "read_timeout",
+        "connect_timeout",
+        "max_retries",
+        "retry_interval",
+    ):
+        value = payload.get(key)
+        if value in (None, ""):
+            continue
+        try:
+            section[key] = float(value) if "timeout" in key or "interval" in key or "per" in key else int(value)
+        except (TypeError, ValueError):
+            raise ConfigError(f"{key} 必须是数字") from None
+
+    raw["proxy"] = section
+    _validate_and_write(config_path, raw)
+    return section
+
+
+def delete_proxy(config_path: Path) -> None:
+    raw = _read_raw(config_path)
+    raw.pop("proxy", None)
+    _validate_and_write(config_path, raw)
+
+
 def delete_host(config_path: Path, alias: str) -> None:
     raw = _read_raw(config_path)
     hosts = raw["hosts"]

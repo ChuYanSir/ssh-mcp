@@ -4,7 +4,7 @@
 配了一个原生桌面端（tkinter，无浏览器、无 Electron），增删主机就是在窗口里填表。
 
 > **作者**：[初颜Sir](https://github.com/ChuYanSir) · chuyansir@163.com
-> **仓库**：<https://github.com/ChuYanSir/ssh-mcp> · **版本**：v1.5.0
+> **仓库**：<https://github.com/ChuYanSir/ssh-mcp> · **版本**：v1.6.0
 
 [![ci](https://github.com/ChuYanSir/ssh-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/ChuYanSir/ssh-mcp/actions/workflows/ci.yml)
 [![release](https://github.com/ChuYanSir/ssh-mcp/actions/workflows/release.yml/badge.svg)](https://github.com/ChuYanSir/ssh-mcp/actions/workflows/release.yml)
@@ -286,7 +286,7 @@ PEM 解析失败时会直接报「解析失败（…）」并提示口令是否�
 
 ---
 
-## 6. 工具清单（17 个）
+## 6. 工具清单（20 个）
 
 | 工具 | 作用 |
 |---|---|
@@ -305,8 +305,61 @@ PEM 解析失败时会直接报「解析失败（…）」并提示口令是否�
 | **`ssh_shell_read`** | 只读新输出，用于观察 `tail -f` 之类 |
 | **`ssh_shell_resize`** | 改终端大小，全屏程序会重排 |
 | **`ssh_shell_close`** | 关闭会话，释放 channel |
+| **`proxy_request`** | 通过配置的出口代理（HTTP / SOCKS5）发一个 HTTP(S) 请求 |
+| **`proxy_status`** | 出口代理配置 + 累计统计（成功/失败/重试/最近错误） |
+| **`proxy_test`** | 测一次代理连通性，返回状态码、延迟、代理看到的出口 IP |
 
 `ssh_exec*` 返回：`{alias, host, command, exit_code, ok, timed_out, truncated, duration_ms, stdout, stderr}`。
+
+---
+
+## 6.0 出口代理（HTTP / SOCKS5）
+
+**和 SSH 完全无关**：`hosts.*.proxy_jump` 是「SSH 跳板机」，这里配的是**出网代理**，
+只影响 `proxy_request` / `proxy_test` 这类工具，不参与任何 SSH 连接。
+
+![出口代理](docs/ui-proxy.png)
+
+桌面端工具栏点 **出口代理** 就能配，字段名与 YAML 一一对应（YAML 里 camelCase / snake_case 都认）：
+
+```yaml
+proxy:
+  enabled: true
+  proxyHost: proxy.example.com     # 或 host:
+  proxyPort: 11134
+  proxyUser: your-account
+  proxyPass: your-password
+  proxyProtocol: HTTP              # HTTP | SOCKS5
+  maxConcurrency: 20000            # 同时在飞的请求上限
+  requestsPerSecond: 5             # 令牌桶限流
+  connectTimeout: 10000            # 毫秒
+  readTimeout: 20000               # 毫秒
+  maxRetries: 3                    # 连接类错误的重试次数（认证错误不重试）
+  retryInterval: 1000              # 毫秒，按 2^n 退避
+```
+
+会话端只要一句话：
+
+```
+proxy_request("https://api.ipify.org?format=json")   # 看代理出口 IP
+proxy_test()                                          # 连通性 + 延迟
+proxy_status()                                        # 配置与累计成功率
+```
+
+实现细节（都用标准库，没加依赖）：
+
+| 能力 | 做法 |
+|---|---|
+| HTTP 代理 | `http://` 目标走 absolute-form 请求行；`https://` 目标先 `CONNECT` 建隧道再 TLS |
+| SOCKS5 代理 | 握手 →（可选）用户名密码认证 → `CONNECT`（IPv4 / 域名 / IPv6 三种地址类型都支持） |
+| 认证 | HTTP 用 `Proxy-Authorization: Basic`；SOCKS5 用 `\x02` 用户名密码子协商 |
+| 限流 | 令牌桶按 `requestsPerSecond` 平滑放行，不会瞬间打满 |
+| 并发 | `maxConcurrency` 个槽位，满了直接报错而不是无限排队 |
+| 重试 | 只对连接类错误重试，`retryInterval × 2^n` 退避；407 / SOCKS5 认证失败立即失败 |
+| 超时 | `connectTimeout` 管建连，`readTimeout` 管等响应 |
+| 响应 | 自动解 chunked、按 `Content-Length` 读满、剥掉逐跳头、按 `body_limit` 截断并标记 |
+
+代理密码不会出现在 `proxy_status` 输出里（只显示 `auth: user+pass`），`proxy.url` 里的密码是 `***`。
 
 ---
 

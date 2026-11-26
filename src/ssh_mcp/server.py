@@ -12,6 +12,8 @@ from typing import Annotated, Any
 from mcp.server.mcpserver import MCPServer
 from pydantic import Field
 
+import anyio
+
 from .audit import AuditLog
 from .config import ConfigError, ServerConfig, load_config
 from .pool import SSHPool
@@ -57,6 +59,9 @@ class Runtime:
         self.cfg: ServerConfig = load_config(config_path)
         self.audit = AuditLog(self.cfg.audit)
         self.pool = SSHPool(self.cfg)
+        # 出口代理（HTTP / SOCKS5）；None = 没配置。与 pool 的 proxy_jump 无关。
+        self.proxy = self.cfg.proxy
+        self._proxy_client: Any = None
         self.started_at = time.time()
         self.autoload = autoload
         self.reload_count = 0
@@ -158,6 +163,8 @@ class Runtime:
             self.audit = AuditLog(new_cfg.audit)
             self.pool = SSHPool(new_cfg)
             self.pool.start_healer()
+            self.proxy = new_cfg.proxy
+            self._proxy_client = None  # 配置换了就丢掉旧的客户端（含限流令牌桶）
             self._path = Path(new_cfg.source) if new_cfg.source else self._path
             self._stamp = self._config_stamp()
             self.reload_count += 1
@@ -208,8 +215,36 @@ def runtime(tool: str | None = None) -> Runtime:
 mcp = MCPServer("ssh-mcp", instructions=INSTRUCTIONS)
 
 
-def _audit(event: str, **fields: Any) -> None:
-    # 直接用已有的 Runtime：别让审计再走一次 runtime()，否则请求计数会翻倍
+# --------------------------------------------------------------------------- #
+# 出口代理（HTTP / SOCKS5）——与 SSH 无关，走的是 servers.yaml 顶层的 proxy: 段
+# --------------------------------------------------------------------------- #
+def proxy_client(rt: Runtime) -> Any:
+    """按当前配置拿一个 ProxyClient；配置换了（热加载）会自动换成新的。"""
+    from .proxy import ProxyClient
+
+    cfg = getattr(rt, "proxy", None)
+    cached = getattr(rt, "_proxy_client", None)
+    if cfg is None:
+        rt._proxy_client = None
+        return None
+    if cached is not None and cached.cfg is cfg:
+        return cached
+    client = ProxyClient(cfg)
+    rt._proxy_client = client
+    return client
+
+
+def proxy_state(rt: Runtime) -> dict[str, Any]:
+    cfg = getattr(rt, "proxy", None)
+    if cfg is None:
+        return {"configured": False, "enabled": False}
+    client = getattr(rt, "_proxy_client", None)
+    out = {"configured": True, **cfg.describe()}
+    out["stats"] = client.stats.describe() if client is not None else None
+    return out
+
+
+def _audit(event: str, **fields: Any) -> None:    # 直接用已有的 Runtime：别让审计再走一次 runtime()，否则请求计数会翻倍
     rt = _rt if _rt is not None else runtime()
     rt.audit.write(event, **fields)
 
@@ -536,6 +571,7 @@ async def ssh_status() -> dict[str, Any]:
             "requests_log": str(Path.home() / ".ssh-mcp" / "logs" / "requests.log"),
         },
         "shells": rt.pool.shell_list(),
+        "proxy": proxy_state(rt),
     }
 
 
@@ -577,3 +613,60 @@ async def ssh_audit_tail(
     """查看最近的审计记录（谁在什么时候对哪台机跑了什么命令）。"""
     rt = runtime("ssh_audit_tail")
     return {"path": rt.cfg.audit.path, "enabled": rt.cfg.audit.enabled, "records": rt.audit.tail(limit)}
+
+
+# --------------------------------------------------------------------------- #
+# 出口代理工具（HTTP / SOCKS5）——和 SSH 完全无关
+# --------------------------------------------------------------------------- #
+@mcp.tool()
+async def proxy_request(
+    url: Annotated[str, Field(description="完整 URL，例如 https://api.ipify.org?format=json")],
+    method: Annotated[str, Field(description="HTTP 方法")] = "GET",
+    headers: Annotated[dict[str, str] | None, Field(description="附加请求头")] = None,
+    body: Annotated[str | None, Field(description="请求体（文本）")] = None,
+    body_limit: Annotated[int, Field(description="最多返回多少字节正文")] = 200_000,
+) -> dict[str, Any]:
+    """**通过配置的上游代理**（HTTP 或 SOCKS5）发一个 HTTP(S) 请求。
+
+    这是独立于 SSH 的能力：不碰任何服务器、不需要 alias，
+    走的是 servers.yaml 顶层 `proxy:` 里配置的那个出口代理。
+    """
+    rt = runtime("proxy_request")
+    client = proxy_client(rt)
+    if client is None:
+        return {
+            "ok": False,
+            "error": "没有配置出口代理：在 servers.yaml 里加 proxy: 段（enabled/host/port/protocol）",
+        }
+    try:
+        resp = await anyio.to_thread.run_sync(
+            lambda: client.request(method, url, headers=headers, body=body, body_limit=body_limit)
+        )
+    except Exception as exc:  # noqa: BLE001
+        _audit("proxy_error", url=url, method=method, error=str(exc))
+        return {"ok": False, "url": url, "error": f"{type(exc).__name__}: {exc}"}
+    _audit("proxy", url=url, method=method, status=resp.status, elapsed_ms=resp.elapsed_ms)
+    out = resp.to_dict(body_limit=body_limit)
+    out["via"] = rt.proxy.describe() if rt.proxy else None
+    return out
+
+
+@mcp.tool()
+async def proxy_status() -> dict[str, Any]:
+    """查看出口代理配置与累计统计（成功/失败/重试次数、最近错误）。"""
+    rt = runtime("proxy_status")
+    return proxy_state(rt)
+
+
+@mcp.tool()
+async def proxy_test(
+    url: Annotated[str, Field(description="用来测连通性的 URL")] = "http://httpbin.org/ip",
+) -> dict[str, Any]:
+    """测一次代理连通性：通过代理请求该 URL，返回状态码、延迟与出口 IP 之类的正文。"""
+    rt = runtime("proxy_test")
+    client = proxy_client(rt)
+    if client is None:
+        return {"ok": False, "error": "没有配置出口代理（servers.yaml 的 proxy: 段）"}
+    result = await anyio.to_thread.run_sync(lambda: client.test(url))
+    _audit("proxy_test", url=url, ok=result.get("ok"), status=result.get("status"))
+    return result

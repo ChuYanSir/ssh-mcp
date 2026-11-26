@@ -705,6 +705,162 @@ class LocalService:
 # --------------------------------------------------------------------------- #
 # MCP 客户端配置对话框：把可直接粘贴的 JSON 递给用户
 # --------------------------------------------------------------------------- #
+class ProxyDialog(tk.Toplevel):
+    """出口代理设置（HTTP / SOCKS5）——与 SSH 主机配置完全无关。"""
+
+    def __init__(self, app: "App") -> None:
+        super().__init__(app)
+        self.app = app
+        self.saved = False
+        self.title("出口代理 · HTTP / SOCKS5")
+        self.transient(app)
+        self.resizable(False, False)
+        self.configure(bg=C["card"], padx=16, pady=14)
+
+        cfg = getattr(app.rt, "proxy", None)
+        self.var_enabled = tk.BooleanVar(value=bool(cfg and cfg.enabled))
+        self.var_protocol = tk.StringVar(value=(cfg.protocol if cfg else "HTTP"))
+        self.var_host = tk.StringVar(value=(cfg.host if cfg else ""))
+        self.var_port = tk.StringVar(value=str(cfg.port) if cfg and cfg.port else "")
+        self.var_user = tk.StringVar(value=(cfg.username if cfg else ""))
+        self.var_pass = tk.StringVar()
+        self.var_concurrency = tk.StringVar(value=str(cfg.max_concurrency if cfg else 64))
+        self.var_rps = tk.StringVar(value=str(cfg.requests_per_second if cfg else 5))
+        self.var_connect = tk.StringVar(
+            value=str(int(cfg.connect_timeout * 1000)) if cfg else "10000"
+        )
+        self.var_read = tk.StringVar(value=str(int(cfg.read_timeout * 1000)) if cfg else "20000")
+        self.var_retries = tk.StringVar(value=str(cfg.max_retries if cfg else 3))
+        self.var_retry_interval = tk.StringVar(
+            value=str(int(cfg.retry_interval * 1000)) if cfg else "1000"
+        )
+
+        ttk.Checkbutton(
+            self, text="启用出口代理（与 SSH 无关，只影响 proxy_request 这类工具）",
+            variable=self.var_enabled,
+        ).grid(row=0, column=0, columnspan=4, sticky="w", pady=(0, 10))
+
+        ttk.Label(self, text="协议").grid(row=1, column=0, sticky="w", pady=3)
+        proto = ttk.Combobox(
+            self, textvariable=self.var_protocol, values=["HTTP", "SOCKS5"],
+            state="readonly", width=12,
+        )
+        proto.grid(row=1, column=1, sticky="w", pady=3)
+        ttk.Label(self, text="代理主机").grid(row=1, column=2, sticky="e", padx=(16, 6))
+        ttk.Entry(self, textvariable=self.var_host, width=30, font=FONT).grid(
+            row=1, column=3, sticky="we", pady=3
+        )
+
+        ttk.Label(self, text="端口").grid(row=2, column=0, sticky="w", pady=3)
+        ttk.Entry(self, textvariable=self.var_port, width=12, font=FONT).grid(
+            row=2, column=1, sticky="w", pady=3
+        )
+        ttk.Label(self, text="用户名").grid(row=2, column=2, sticky="e", padx=(16, 6))
+        ttk.Entry(self, textvariable=self.var_user, width=30, font=FONT).grid(
+            row=2, column=3, sticky="we", pady=3
+        )
+
+        ttk.Label(self, text="密码").grid(row=3, column=0, sticky="w", pady=3)
+        ttk.Entry(self, textvariable=self.var_pass, width=12, show="•", font=FONT).grid(
+            row=3, column=1, sticky="w", pady=3
+        )
+        self.lbl_pass = ttk.Label(self, text="", foreground=C["dim"])
+        self.lbl_pass.grid(row=3, column=2, columnspan=2, sticky="w", padx=(16, 0))
+        if cfg and cfg.username:
+            self.lbl_pass.configure(text="已保存密码，留空表示不修改")
+
+        box = ttk.LabelFrame(self, text="限流与超时", padding=10)
+        box.grid(row=4, column=0, columnspan=4, sticky="we", pady=(12, 8))
+        rows = [
+            ("最大并发", self.var_concurrency, "每秒请求数", self.var_rps),
+            ("连接超时(ms)", self.var_connect, "读取超时(ms)", self.var_read),
+            ("重试次数", self.var_retries, "重试间隔(ms)", self.var_retry_interval),
+        ]
+        for i, (l1, v1, l2, v2) in enumerate(rows):
+            ttk.Label(box, text=l1).grid(row=i, column=0, sticky="w", pady=3)
+            ttk.Entry(box, textvariable=v1, width=12, font=FONT).grid(
+                row=i, column=1, sticky="w", pady=3
+            )
+            ttk.Label(box, text=l2).grid(row=i, column=2, sticky="e", padx=(20, 6))
+            ttk.Entry(box, textvariable=v2, width=12, font=FONT).grid(
+                row=i, column=3, sticky="w", pady=3
+            )
+
+        self.lbl_result = ttk.Label(self, text="", foreground=C["dim"], wraplength=520, justify="left")
+        self.lbl_result.grid(row=5, column=0, columnspan=4, sticky="w", pady=(4, 8))
+
+        bar = ttk.Frame(self)
+        bar.grid(row=6, column=0, columnspan=4, sticky="we")
+        ttk.Button(bar, text="测试连接", style="Ghost.TButton", command=self.test).pack(side="left")
+        ttk.Button(bar, text="取消", style="Ghost.TButton", command=self.destroy).pack(side="right")
+        ttk.Button(bar, text="保存", style="Primary.TButton", command=self.save).pack(
+            side="right", padx=(0, 8)
+        )
+
+        self.bind("<Escape>", lambda e: self.destroy())
+        self.geometry("640x430")
+        self.update_idletasks()
+        px = app.winfo_rootx() + (app.winfo_width() - 640) // 2
+        py = app.winfo_rooty() + (app.winfo_height() - 430) // 2
+        self.geometry(f"640x430+{max(px, 0)}+{max(py, 0)}")
+
+    # ------------------------------------------------------------------ 动作
+    def _payload(self) -> dict:
+        return {
+            "enabled": self.var_enabled.get(),
+            "protocol": self.var_protocol.get(),
+            "host": self.var_host.get().strip(),
+            "port": self.var_port.get().strip(),
+            "username": self.var_user.get().strip(),
+            "password": self.var_pass.get(),
+            "max_concurrency": self.var_concurrency.get().strip(),
+            "requests_per_second": self.var_rps.get().strip(),
+            "connect_timeout": self.var_connect.get().strip(),
+            "read_timeout": self.var_read.get().strip(),
+            "retry_interval": self.var_retry_interval.get().strip(),
+            "max_retries": self.var_retries.get().strip(),
+        }
+
+    def save(self) -> None:
+        try:
+            from .config_store import upsert_proxy
+
+            upsert_proxy(self.app.cfg_path, self._payload())
+        except Exception as exc:  # noqa: BLE001
+            messagebox.showerror("保存失败", str(exc), parent=self)
+            return
+        self.saved = True
+        self.lbl_result.configure(text="已保存。MCP 服务会在下次调用时自动热加载。", foreground=C["ok"])
+        self.after(600, self.destroy)
+
+    def test(self) -> None:
+        self.lbl_result.configure(text="正在通过代理请求 httpbin.org/ip …", foreground=C["dim"])
+
+        def work() -> None:
+            try:
+                from .proxy import ProxyClient, ProxyConfig
+
+                cfg = ProxyConfig.from_mapping(self._payload())
+                if cfg is None or not cfg.enabled:
+                    raise ValueError("代理未启用")
+                cfg.validate()
+                result = ProxyClient(cfg).test()
+                if result.get("ok"):
+                    text = f"连通 ✅  {result.get('latency_ms')}ms  出口：{(result.get('body') or '')[:200]}"
+                    color = C["ok"]
+                else:
+                    text = f"失败：{result.get('error')}"
+                    color = C["err"]
+            except Exception as exc:  # noqa: BLE001
+                text, color = f"失败：{type(exc).__name__}: {exc}", C["err"]
+            try:
+                self.after(0, lambda: self.lbl_result.configure(text=text, foreground=color))
+            except Exception:  # noqa: BLE001
+                pass
+
+        threading.Thread(target=work, daemon=True).start()
+
+
 class McpConfigDialog(tk.Toplevel):
     def __init__(self, app: "App") -> None:
         super().__init__(app)
@@ -1299,6 +1455,7 @@ class App(tk.Tk):
         self._load_ui_state()
         self._refresh_hosts()
         self._sync_service_ui()
+        self._sync_proxy_chip()
         self.after(3000, self._poll_service)
         # 启动后静默查一次更新（有网就查，失败只在终端留一行，不打扰）
         self.after(4000, lambda: self.check_updates(silent=True))
@@ -1526,6 +1683,8 @@ class App(tk.Tk):
         self.btn_shell.pack(side="left", padx=(2, 0))
         ttk.Button(bar, text="刷新", style="Ghost.TButton", command=self._refresh_hosts).pack(side="left", padx=(2, 0))
         ttk.Button(bar, text="MCP 配置", style="Ghost.TButton", command=self.show_mcp_config).pack(side="left", padx=(2, 0))
+        self.btn_proxy = ttk.Button(bar, text="出口代理", style="Ghost.TButton", command=self.show_proxy)
+        self.btn_proxy.pack(side="left", padx=(2, 0))
 
         more = ttk.Menubutton(bar, text="更多 ▾", style="Ghost.TButton")
         self.more_btn = more
@@ -1983,6 +2142,21 @@ class App(tk.Tk):
     def show_mcp_config(self) -> None:
         dlg = McpConfigDialog(self)
         self.wait_window(dlg)
+
+    def show_proxy(self) -> None:
+        dlg = ProxyDialog(self)
+        self.wait_window(dlg)
+        if getattr(dlg, "saved", False):
+            self.rt = srv.init_runtime(str(self.cfg_path))
+            self._sync_proxy_chip()
+
+    def _sync_proxy_chip(self) -> None:
+        """工具栏按钮上标一下代理协议，一眼能看出有没有配。"""
+        cfg = getattr(self.rt, "proxy", None)
+        if cfg is None or not cfg.enabled:
+            self.btn_proxy.configure(text="出口代理")
+        else:
+            self.btn_proxy.configure(text=f"出口代理 · {cfg.protocol}")
 
     def show_about(self) -> None:
         dlg = AboutDialog(self)

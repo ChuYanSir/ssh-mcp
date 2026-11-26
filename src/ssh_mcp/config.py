@@ -305,6 +305,8 @@ class ServerConfig:
     hosts: dict[str, Host]
     policy: Policy = field(default_factory=Policy)
     audit: Audit = field(default_factory=Audit)
+    # 出口代理（HTTP / SOCKS5）。与 SSH 的 proxy_jump（跳板机）是两回事。
+    proxy: Any = None
     source: str | None = None
     name: str = "ssh-mcp"
 
@@ -417,10 +419,27 @@ def load_config(path: str | None = None) -> ServerConfig:
     audit.path = _expand_path(audit.path) or audit.path
     policy.max_output_bytes = max(policy.max_output_bytes, 4096)
 
+    # 出口代理：顶层 proxy: 段；字段名兼容 snake_case 与 camelCase
+    proxy_raw = raw.get("proxy")
+    proxy = None
+    if proxy_raw not in (None, False, {}):
+        from .proxy import ProxyConfig  # 局部导入，避免 config <-> proxy 循环
+
+        try:
+            proxy = ProxyConfig.from_mapping(proxy_raw)
+        except ValueError as exc:
+            raise ConfigError(str(exc)) from exc
+        if proxy is not None:
+            try:
+                proxy.validate()
+            except ValueError as exc:
+                raise ConfigError(str(exc)) from exc
+
     return ServerConfig(
         hosts=hosts,
         policy=policy,
         audit=audit,
+        proxy=proxy,
         source=str(cfg_path),
         name=str(raw.get("name") or "ssh-mcp"),
     )
