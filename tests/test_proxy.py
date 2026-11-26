@@ -361,6 +361,51 @@ def test_disabled_proxy_rejects():
     assert "未启用" in str(exc.value)
 
 
+def test_budget_caps_total_time():
+    """重试次数再多，总预算也只给两轮往返——否则会拖穿客户端超时。"""
+    cfg = ProxyConfig(
+        enabled=True, host="h", port=1, connect_timeout=10, read_timeout=20, max_retries=5
+    )
+    assert cfg.budget() == 60.0          # (10+20) × 2，不是 ×6
+    cfg2 = ProxyConfig(enabled=True, host="h", port=1, connect_timeout=10, read_timeout=20, max_retries=0)
+    assert cfg2.budget() == 30.0         # 不重试就是单轮
+
+
+def test_request_respects_budget(monkeypatch):
+    """预算耗尽后要立刻失败，不能继续 sleep 重试。"""
+    cfg = ProxyConfig(
+        enabled=True, host="127.0.0.1", port=1, protocol="HTTP",
+        max_retries=5, retry_interval=0.01, requests_per_second=0, connect_timeout=1,
+    )
+    cfg.validate()
+    client = ProxyClient(cfg)
+    calls = {"n": 0}
+
+    def slow(*a, **k):
+        calls["n"] += 1
+        time.sleep(0.6)          # 模拟一次真实的读超时
+        raise TimeoutError("timed out")
+
+    client._attempt = slow  # type: ignore[method-assign]
+    with pytest.raises(ProxyError) as exc:
+        client.request("GET", "http://x/", timeout=2.0)
+    assert "总耗时上限" in str(exc.value)
+    assert calls["n"] <= 3       # 2s 预算内不该跑满 6 次
+
+
+def test_timeout_error_hints_at_proxy_flakiness():
+    cfg = ProxyConfig(
+        enabled=True, host="127.0.0.1", port=1, protocol="HTTP",
+        max_retries=0, retry_interval=0, requests_per_second=0, connect_timeout=1,
+    )
+    cfg.validate()
+    client = ProxyClient(cfg)
+    client._attempt = lambda *a, **k: (_ for _ in ()).throw(TimeoutError("timed out"))  # type: ignore[method-assign]
+    with pytest.raises(ProxyError) as exc:
+        client.request("GET", "http://x/")
+    assert "出口抖动" in str(exc.value) and "readTimeout" in str(exc.value)
+
+
 def test_bad_scheme_rejected():
     cfg = ProxyConfig(enabled=True, host="127.0.0.1", port=1)
     cfg.validate()

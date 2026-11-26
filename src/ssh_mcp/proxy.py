@@ -247,6 +247,17 @@ class ProxyConfig:
             time.sleep(step)
             waited += step
 
+    def budget(self, *, attempts: int | None = None) -> float:
+        """一次 `request()` 允许花掉的总时间（含所有重试）。
+
+        MCP 客户端普遍在 60s 上下超时；如果放任「读超时 × 重试次数」相加，
+        单次调用能拖到 80s 以上——客户端先超时，用户看到的就是「超时」，
+        而实际上请求还在跑。这里把总预算压到最多两轮往返。
+        """
+        single = self.connect_timeout + self.read_timeout
+        rounds = min((attempts if attempts is not None else self.max_retries + 1), 2)
+        return single * max(1, rounds)
+
     def describe(self) -> dict[str, Any]:
         return {
             "enabled": self.enabled,
@@ -289,9 +300,9 @@ def _recv_exact(sock: socket.socket, n: int) -> bytes:
     return bytes(buf)
 
 
-def _open_tunnel_http(cfg: ProxyConfig, host: str, port: int) -> socket.socket:
+def _open_tunnel_http(cfg: ProxyConfig, host: str, port: int, connect_timeout: float | None = None) -> socket.socket:
     """HTTP 代理的 CONNECT 隧道。"""
-    sock = socket.create_connection((cfg.host, cfg.port), timeout=cfg.connect_timeout)
+    sock = socket.create_connection((cfg.host, cfg.port), timeout=connect_timeout or cfg.connect_timeout)
     try:
         target = f"{host}:{port}"
         head = [f"CONNECT {target} HTTP/1.1", f"Host: {target}", f"User-Agent: {UA}"]
@@ -341,8 +352,8 @@ def _socks5_handshake(cfg: ProxyConfig, sock: socket.socket) -> None:
             raise ProxyAuthError("SOCKS5 用户名/密码认证失败，检查 proxyUser / proxyPass")
 
 
-def _open_tunnel_socks5(cfg: ProxyConfig, host: str, port: int) -> socket.socket:
-    sock = socket.create_connection((cfg.host, cfg.port), timeout=cfg.connect_timeout)
+def _open_tunnel_socks5(cfg: ProxyConfig, host: str, port: int, connect_timeout: float | None = None) -> socket.socket:
+    sock = socket.create_connection((cfg.host, cfg.port), timeout=connect_timeout or cfg.connect_timeout)
     try:
         _socks5_handshake(cfg, sock)
         try:
@@ -379,10 +390,12 @@ def _open_tunnel_socks5(cfg: ProxyConfig, host: str, port: int) -> socket.socket
         raise
 
 
-def open_tunnel(cfg: ProxyConfig, host: str, port: int) -> socket.socket:
+def open_tunnel(
+    cfg: ProxyConfig, host: str, port: int, connect_timeout: float | None = None
+) -> socket.socket:
     if cfg.protocol == "HTTP":
-        return _open_tunnel_http(cfg, host, port)
-    return _open_tunnel_socks5(cfg, host, port)
+        return _open_tunnel_http(cfg, host, port, connect_timeout)
+    return _open_tunnel_socks5(cfg, host, port, connect_timeout)
 
 
 # --------------------------------------------------------------------------- #
@@ -554,9 +567,10 @@ class ProxyClient:
         self.stats = ProxyStats()
 
     # ---------------------------------------------------------------- 内部
-    def _connect(self, scheme: str, host: str, port: int) -> socket.socket:
+    def _connect(self, scheme: str, host: str, port: int, connect_timeout: float | None = None) -> socket.socket:
+        timeout = connect_timeout or self.cfg.connect_timeout
         if scheme == "https":
-            tunnel = open_tunnel(self.cfg, host, port)
+            tunnel = open_tunnel(self.cfg, host, port, connect_timeout=timeout)
             ctx = ssl.create_default_context()
             if not self.cfg.verify_tls:
                 ctx.check_hostname = False
@@ -571,8 +585,8 @@ class ProxyClient:
                 raise
         if self.cfg.protocol == "HTTP":
             # 明文 HTTP 走 in-band：直连代理，请求行用 absolute-form
-            return socket.create_connection((self.cfg.host, self.cfg.port), timeout=self.cfg.connect_timeout)
-        return open_tunnel(self.cfg, host, port)
+            return socket.create_connection((self.cfg.host, self.cfg.port), timeout=timeout)
+        return open_tunnel(self.cfg, host, port, connect_timeout=timeout)
 
     def _build_request(
         self,
@@ -609,6 +623,7 @@ class ProxyClient:
         headers: dict[str, str],
         body: bytes | None,
         body_limit: int,
+        deadline: float | None = None,
     ) -> ProxyResponse:
         parsed = urlsplit(url)
         scheme = (parsed.scheme or "http").lower()
@@ -622,10 +637,21 @@ class ProxyClient:
         if ":" in host and not host.startswith("["):
             host_header = f"[{host}]" if port in (80, 443) else f"[{host}]:{port}"
 
+        # 剩余预算不够就别开始：这样单次调用不会被读超时拖穿客户端的超时
+        if deadline is not None:
+            remaining = deadline - time.monotonic()
+            if remaining <= 1.0:
+                raise TimeoutError("总预算已用尽")
+            read_timeout = max(1.0, min(self.cfg.read_timeout, remaining))
+            connect_timeout = max(1.0, min(self.cfg.connect_timeout, remaining))
+        else:
+            read_timeout = self.cfg.read_timeout
+            connect_timeout = self.cfg.connect_timeout
+
         started = time.perf_counter()
-        sock = self._connect(scheme, host, port)
+        sock = self._connect(scheme, host, port, connect_timeout)
         try:
-            sock.settimeout(self.cfg.read_timeout)
+            sock.settimeout(read_timeout)
             absolute = scheme == "http" and self.cfg.protocol == "HTTP"
             payload = self._build_request(
                 method, parsed, headers, body, absolute=absolute, host_header=host_header
@@ -669,11 +695,16 @@ class ProxyClient:
             )
         try:
             self.cfg.throttle()
+            deadline = time.monotonic() + (timeout if timeout is not None else self.cfg.budget())
             last: Exception | None = None
             retries = 0
             for attempt in range(self.cfg.max_retries + 1):
+                remaining = deadline - time.monotonic()
+                if remaining <= 1.0:
+                    last = last or TimeoutError("总预算已用尽")
+                    break
                 try:
-                    resp = self._attempt(method, url, hdrs, body, limit)
+                    resp = self._attempt(method, url, hdrs, body, limit, deadline=deadline)
                     self.stats.record(ok=resp.ok, retries=retries)
                     return resp
                 except ProxyAuthError as exc:  # 认证错误重试没意义
@@ -683,11 +714,20 @@ class ProxyClient:
                     last = exc
                     if attempt >= self.cfg.max_retries:
                         break
+                    backoff = self.cfg.retry_interval * (2**attempt)
+                    if time.monotonic() + backoff >= deadline - 1.0:
+                        break  # 再等就超预算了，直接把当前错误报出去
                     retries += 1
-                    time.sleep(self.cfg.retry_interval * (2**attempt))
+                    time.sleep(backoff)
             msg = f"{type(last).__name__}: {last}" if last else "未知错误"
+            hint = ""
+            if isinstance(last, (TimeoutError, socket.timeout)):
+                hint = "；住宅/轮换型代理常见出口抖动，可稍后重试、换 proxyProtocol，或调大 readTimeout"
             self.stats.record(ok=False, error=msg, retries=retries)
-            raise ProxyError(f"通过代理请求 {url} 失败（已重试 {retries} 次）：{msg}") from last
+            raise ProxyError(
+                f"通过代理请求 {url} 失败（已重试 {retries} 次，总耗时上限 "
+                f"{timeout if timeout is not None else self.cfg.budget():.0f}s）：{msg}{hint}"
+            ) from last
         finally:
             self.cfg.release_slot()
 

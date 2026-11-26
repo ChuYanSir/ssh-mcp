@@ -4,7 +4,7 @@
 配了一个原生桌面端（tkinter，无浏览器、无 Electron），增删主机就是在窗口里填表。
 
 > **作者**：[初颜Sir](https://github.com/ChuYanSir) · chuyansir@163.com
-> **仓库**：<https://github.com/ChuYanSir/ssh-mcp> · **版本**：v1.6.1
+> **仓库**：<https://github.com/ChuYanSir/ssh-mcp> · **版本**：v1.6.2
 
 [![ci](https://github.com/ChuYanSir/ssh-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/ChuYanSir/ssh-mcp/actions/workflows/ci.yml)
 [![release](https://github.com/ChuYanSir/ssh-mcp/actions/workflows/release.yml/badge.svg)](https://github.com/ChuYanSir/ssh-mcp/actions/workflows/release.yml)
